@@ -1,0 +1,197 @@
+# docker-compose.yml — multica + tinyproxy + caddy stack.
+#
+# Reuses host's native postgres (127.0.0.1:5432) and redis (127.0.0.1:6379)
+# via host.docker.internal — no docker pg/redis services here.
+#
+# Three services:
+#   multica   — brainstorm Claude orchestrator (multica.ai daemon)
+#   tinyproxy — egress allowlist proxy for multica container
+#   caddy     — TLS reverse proxy bound to tailnet IP only
+
+services:
+
+  # ============================================================================
+  # multica daemon — runs Claude Code in workspaces
+  # ============================================================================
+  multica:
+    image: multica/daemon:latest
+    container_name: multica
+    restart: unless-stopped
+
+    # NEVER as root in container
+    user: "1001:1001"
+    read_only: true
+
+    # No new privileges, drop everything we don't need
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # Memory limit — soft cap to prevent runaway consumption
+    mem_limit: 4g
+    mem_reservation: 1g
+
+    # Writable scratch via tmpfs (rootfs is read-only)
+    tmpfs:
+      - /tmp:size=512m
+      - /run:size=64m
+
+    volumes:
+      # Bundled skills — read-only mount from this repo
+      - ./skills:/home/claude/.claude/skills:ro
+
+      # Claude's stateful directory (auth tokens, session state)
+      - claude-brainstorm-config:/home/claude/.claude
+
+      # Plans repo — RW so /publish-plan can git commit + push
+      - /srv/plans-multica:/srv/plans-multica:rw
+
+      # Settings (deny/allow rules) — read-only
+      - ./config/claude/settings.json:/home/claude/.claude/settings.json:ro
+
+      # Multica's own data (workspaces, agent runs)
+      - multica-data:/var/lib/multica
+
+    environment:
+      # Database via host
+      DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@host.docker.internal:5432/${POSTGRES_DB}"
+
+      # Redis via host
+      REDIS_URL: "redis://host.docker.internal:6379/${REDIS_DB:-5}"
+
+      # Egress proxy — ALL outbound HTTP traffic goes through tinyproxy
+      HTTP_PROXY: "http://tinyproxy:8888"
+      HTTPS_PROXY: "http://tinyproxy:8888"
+      NO_PROXY: "host.docker.internal,localhost,127.0.0.1,tinyproxy,caddy"
+
+      # NO ANTHROPIC_API_KEY — interactive `claude /login` instead
+      # See README → "First-time deployment"
+
+      # Telegram secrets are NOT here (they're GitHub Actions secrets in plans repo)
+
+      TZ: "${TZ:-Europe/Moscow}"
+
+    extra_hosts:
+      # Allows resolution of host's pg/redis from inside container
+      - "host.docker.internal:host-gateway"
+
+    networks:
+      - brainstorm
+
+    depends_on:
+      tinyproxy:
+        condition: service_started
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+    labels:
+      - "com.multica.role=daemon"
+
+  # ============================================================================
+  # tinyproxy — egress allowlist for the multica container
+  # ============================================================================
+  tinyproxy:
+    image: kalaksi/tinyproxy:latest
+    container_name: tinyproxy
+    restart: unless-stopped
+    read_only: true
+    user: "tinyproxy"
+
+    cap_drop:
+      - ALL
+
+    volumes:
+      - ./config/tinyproxy/tinyproxy.conf:/etc/tinyproxy/tinyproxy.conf:ro
+      - tinyproxy-state:/var/log/tinyproxy
+
+    networks:
+      - brainstorm
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--proxy=off", "http://localhost:8888"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+    labels:
+      - "com.multica.role=egress-proxy"
+
+  # ============================================================================
+  # caddy — TLS reverse proxy, bound to tailnet IP only
+  # ============================================================================
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: caddy
+    restart: unless-stopped
+
+    # Bind to tailnet interface only (set by entrypoint script reading tailscale ip)
+    # Caddy automatically respects $CADDY_BIND_HOST in our Caddyfile snippet.
+    network_mode: "host"   # need host networking to access tailscale IP directly
+
+    volumes:
+      - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+      # Mount tailscale state so Caddy can read certs
+      - /var/lib/tailscale:/var/lib/tailscale:ro
+
+    environment:
+      TAILNET_NAME: "${TAILNET_NAME}"
+      TAILSCALE_HOSTNAME: "${TAILSCALE_HOSTNAME:-multica}"
+      MULTICA_BACKEND: "http://localhost:3000"
+
+    cap_add:
+      - NET_BIND_SERVICE   # bind to :443
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+    depends_on:
+      multica:
+        condition: service_started
+
+    labels:
+      - "com.multica.role=reverse-proxy"
+
+
+# ==============================================================================
+# Networks
+# ==============================================================================
+networks:
+  brainstorm:
+    driver: bridge
+    # No internet via default gateway — egress goes through tinyproxy.
+    # We can't actually disable the default gw in compose, but tinyproxy is
+    # the only configured proxy and any direct connection attempts will go
+    # through Docker's default bridge with iptables rules (set up at host level).
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+
+# ==============================================================================
+# Named volumes (persistent across restarts)
+# ==============================================================================
+volumes:
+  claude-brainstorm-config:
+    name: claude-brainstorm-config
+  multica-data:
+    name: multica-data
+  caddy-data:
+    name: caddy-data
+  caddy-config:
+    name: caddy-config
+  tinyproxy-state:
+    name: tinyproxy-state

@@ -1,0 +1,52 @@
+// config/tailscale/acl.json — REFERENCE only.
+//
+// This is NOT auto-applied. Tailscale ACL is edited via the admin console at:
+//   https://login.tailscale.com/admin/acls
+//
+// On first deploy: copy the JSON below, paste into the admin console, save.
+// After that, ACL is managed in the admin (this file is a documented reference
+// to know what should be there).
+{
+	"tagOwners": {
+		"tag:multica-host": ["autogroup:admin"]
+	},
+
+	"acls": [
+		// Admin (you) can reach the multica server on https + ssh
+		{
+			"action": "accept",
+			"src":    ["autogroup:admin"],
+			"dst":    ["tag:multica-host:443", "tag:multica-host:22"]
+		},
+
+		// Multica-host can reach back out to admin's devices for tailscale-ssh use cases
+		{
+			"action": "accept",
+			"src":    ["tag:multica-host"],
+			"dst":    ["autogroup:admin:*"]
+		}
+	],
+
+	"ssh": [
+		// Tailscale SSH — admin can ssh into multica-host as root or multica user
+		// (without separate ssh keys; tailscale identity is the auth)
+		{
+			"action": "accept",
+			"src":    ["autogroup:admin"],
+			"dst":    ["tag:multica-host"],
+			"users":  ["root", "multica"]
+		}
+	],
+
+	"nodeAttrs": [
+		{
+			"target": ["tag:multica-host"],
+			"attr":   ["funnel"]   // not actually using Funnel; this is a placeholder
+		}
+	],
+
+	"autoApprovers": {
+		"routes":   {},
+		"exitNode": []
+	}
+}

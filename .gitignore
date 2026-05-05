@@ -1,0 +1,23 @@
+.env
+.env.local
+.env.*.local
+*.env
+!.env.example
+
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/
+
+# Bootstrap state files (local-only marker files)
+.bootstrap-state/
+*.lock
+
+# Backups
+backups/
+*.bak
+
+# Skill auth
+skills/*/auth.json

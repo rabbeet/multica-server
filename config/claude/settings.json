@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "defaultMode": "ask",
+
+    "deny": [
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(rsync *)",
+      "Bash(sftp *)",
+
+      "Bash(forge *)",
+      "Bash(gh ssh-key *)",
+      "Bash(gh repo create *)",
+      "Bash(gh repo delete *)",
+      "Bash(gh secret *)",
+
+      "Bash(php artisan migrate*)",
+      "Bash(php artisan tinker*)",
+      "Bash(php artisan db*)",
+
+      "Bash(npm publish *)",
+      "Bash(yarn publish *)",
+      "Bash(pip install *)",
+
+      "Bash(git push origin main*)",
+      "Bash(git push * main*)",
+      "Bash(git remote add *)",
+
+      "Bash(curl *api.clickavia*)",
+      "Bash(curl *api.aviasales*)",
+      "Bash(curl *api.openai*)",
+      "Bash(curl *api.telegram.org*)",
+      "Bash(wget *api.clickavia*)",
+      "Bash(wget *api.aviasales*)",
+
+      "Bash(psql *)",
+      "Bash(mysql *)",
+      "Bash(mysqldump *)",
+      "Bash(pg_dump *)",
+      "Bash(redis-cli *)",
+      "Bash(clickhouse-client *)",
+      "Bash(mongosh *)",
+
+      "Bash(sudo *)",
+      "Bash(su -*)",
+      "Bash(chown *)",
+      "Bash(chmod 7*)",
+
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf $HOME*)",
+      "Bash(rm -rf ~*)",
+
+      "Read(/home/claude/.ssh/*)",
+      "Read(/home/claude/.gnupg/*)",
+      "Read(/home/claude/.git-credentials*)",
+      "Read(/etc/passwd)",
+      "Read(/etc/shadow)",
+      "Read(**/.env*)",
+      "Read(**/credentials*)",
+      "Read(**/.aws/*)",
+      "Read(**/.gh/*)"
+    ],
+
+    "allow": [
+      "Read(/srv/plans-multica/**)",
+      "Read(/workdir/pulse-docs/**)",
+      "Read(/home/claude/.claude/skills/**)",
+
+      "Edit(/srv/plans-multica/**)",
+      "Write(/srv/plans-multica/**)",
+
+      "Bash(git -C /srv/plans-multica status*)",
+      "Bash(git -C /srv/plans-multica log*)",
+      "Bash(git -C /srv/plans-multica diff*)",
+      "Bash(git -C /srv/plans-multica show*)",
+      "Bash(git -C /srv/plans-multica fetch*)",
+      "Bash(git -C /srv/plans-multica pull*)",
+      "Bash(git -C /srv/plans-multica add *)",
+      "Bash(git -C /srv/plans-multica commit *)",
+      "Bash(git -C /srv/plans-multica push *)",
+      "Bash(git -C /srv/plans-multica branch*)",
+      "Bash(git -C /srv/plans-multica checkout*)",
+
+      "Bash(yq *)",
+      "Bash(jq *)",
+      "Bash(grep *)",
+      "Bash(rg *)",
+      "Bash(find /srv/plans-multica*)",
+      "Bash(find /workdir/pulse-docs*)",
+      "Bash(ls *)",
+      "Bash(cat /srv/plans-multica/**)",
+      "Bash(cat /workdir/pulse-docs/**)",
+      "Bash(date *)",
+      "Bash(echo *)",
+
+      "Grep(**)",
+      "Glob(**)"
+    ]
+  },
+
+  "notes": [
+    "This file is bind-mounted read-only into the multica brainstorm container.",
+    "Edits require re-deploying the container (docker restart multica).",
+    "Defense-in-depth: even if Claude bypasses this layer, L1 (filesystem :ro) and L2 (egress allowlist) hold."
+  ]
+}

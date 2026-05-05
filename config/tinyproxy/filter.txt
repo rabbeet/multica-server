@@ -1,0 +1,34 @@
+# filter.txt — domain allowlist for tinyproxy.
+# Lines beginning with # are comments. Wildcards: *.domain.tld
+
+# ---- Anthropic API ----
+api.anthropic.com
+^api\.anthropic\.com$
+
+# ---- GitHub ----
+# git push/pull, ls-remote, GHE API for fine-grained PAT validation
+github.com
+^github\.com$
+api.github.com
+^api\.github\.com$
+# CDN for clone/fetch
+codeload.github.com
+^codeload\.github\.com$
+# Releases / raw content (used by some skills)
+raw.githubusercontent.com
+^raw\.githubusercontent\.com$
+objects.githubusercontent.com
+^.*\.githubusercontent\.com$
+
+# ---- Cloudflare (used for some Anthropic edge IPs) ----
+# Anthropic uses CloudFront sometimes; allow Cloudflare-fronted endpoints too.
+^.*\.cloudflarestorage\.com$
+
+# ---- DNS ----
+# DNS lookups don't go through tinyproxy (it's HTTP/HTTPS proxy).
+# Container uses Docker's resolver; nothing to allowlist here.
+
+# ---- Tailnet (internal multica → caddy) ----
+# Container talks to caddy via host networking; nothing through proxy.
+
+# Everything not matching above is DENIED by FilterDefaultDeny Yes.
