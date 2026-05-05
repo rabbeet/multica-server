@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 09-validate-resources.sh — sanity-check that the server has headroom
+# 12-validate-resources.sh — sanity-check that the server has headroom
 # after the multica stack started.
 
 set -euo pipefail

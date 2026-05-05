@@ -9,7 +9,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_lib.sh"
 require_env
 
-REPO=$(repo_root)
+USERNAME="${MULTICA_USER:-multica}"
+USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
+MULTICA_REPO="$USER_HOME/multica"
 FAILS=0
 
 check() {
@@ -23,13 +25,15 @@ check() {
 }
 
 # =============================================================================
-# Section 1: Host services we depend on
+# Section 1: Host services + binaries
 # =============================================================================
-log_info "=== Host services ==="
-check "postgresql active"   systemctl is-active --quiet postgresql
-check "redis-server active" systemctl is-active --quiet redis-server
-check "docker active"       systemctl is-active --quiet docker
-check "tailscaled active"   systemctl is-active --quiet tailscaled
+log_info "=== Host environment ==="
+check "docker active"        systemctl is-active --quiet docker
+check "tailscaled active"    systemctl is-active --quiet tailscaled
+check "multica binary"       command -v multica
+check "claude binary"        command -v claude
+check "multica user exists"  id -u "$USERNAME"
+check "multica home present" test -d "$USER_HOME"
 
 # =============================================================================
 # Section 2: Tailscale
@@ -39,126 +43,136 @@ log_info "=== Tailscale ==="
 check "tailscale BackendState=Running" \
     bash -c "tailscale status --json | jq -e '.BackendState == \"Running\"' >/dev/null"
 
-# Cert ready?
-HOSTNAME_FQDN="${TAILSCALE_HOSTNAME:-multica}.${TAILNET_NAME}"
-if tailscale cert "$HOSTNAME_FQDN" >/dev/null 2>&1; then
-    log_ok "tailscale cert for $HOSTNAME_FQDN ready"
-else
-    log_warn "tailscale cert for $HOSTNAME_FQDN not yet provisioned (will fetch on first request)"
-fi
-
-# Key expiry warning
 if tailscale status --json 2>/dev/null | jq -e '.Self.KeyExpiry' >/dev/null 2>&1; then
     expiry_ts=$(tailscale status --json | jq -r '.Self.KeyExpiry')
     expiry_epoch=$(date -d "$expiry_ts" +%s 2>/dev/null || echo 0)
     now=$(date +%s)
     days_left=$(( (expiry_epoch - now) / 86400 ))
     if [[ $days_left -lt 14 ]]; then
-        log_warn "Tailscale key expires in $days_left days! Re-auth in admin console."
+        log_warn "Tailscale key expires in $days_left days"
     else
         log_ok "Tailscale key valid for $days_left more days"
     fi
 fi
 
-# =============================================================================
-# Section 3: Postgres (multica DB connectivity)
-# =============================================================================
-log_info ""
-log_info "=== Postgres ==="
-check "multica role exists" \
-    bash -c "sudo -u postgres psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='${POSTGRES_USER}'\" | grep -q 1"
-check "multica database exists" \
-    bash -c "sudo -u postgres psql -tAc \"SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB}'\" | grep -q 1"
-check "multica DB reachable from local" \
-    bash -c "PGPASSWORD='${POSTGRES_PASSWORD}' psql -h 127.0.0.1 -U '${POSTGRES_USER}' -d '${POSTGRES_DB}' -tAc 'SELECT 1' | grep -q 1"
-
-# =============================================================================
-# Section 4: Docker stack
-# =============================================================================
-log_info ""
-log_info "=== Docker stack ==="
-cd "$REPO"
-for svc in multica tinyproxy caddy; do
-    check "$svc container running" \
-        bash -c "docker ps --filter 'name=$svc' --format '{{.Names}}' | grep -q '^$svc\$'"
-done
-
-# =============================================================================
-# Section 5: Container internals — REAL write+read+delete test
-# =============================================================================
-log_info ""
-log_info "=== Container internals ==="
-
-# Per Eng Review Reviewer Concern #3: don't just check `claude --version`,
-# write+read+delete on the writable mount.
-TEST_FILE="/home/claude/.claude/.verify-$$"
-if docker exec multica bash -c "echo verify > $TEST_FILE && cat $TEST_FILE | grep -q verify && rm $TEST_FILE" >/dev/null 2>&1; then
-    log_ok "container can write+read+delete in /home/claude/.claude/"
+# Check tailscale serve config
+if tailscale serve status 2>/dev/null | grep -q ':443'; then
+    log_ok "tailscale serve configured (HTTPS:443 → multica)"
 else
-    log_error "container CANNOT write to /home/claude/.claude/ — mount problem"
-    FAILS=$((FAILS+1))
+    log_warn "tailscale serve not configured (10-tailscale-serve.sh may not have run)"
 fi
 
-# Pulse-docs read-only mount (if configured)
-if docker exec multica test -d /workdir/pulse-docs 2>/dev/null; then
-    log_ok "pulse-docs mounted (read-only)"
-else
-    log_warn "pulse-docs not mounted (skipped if Pulse not on this host)"
-fi
+# =============================================================================
+# Section 3: multica stack (docker compose services)
+# =============================================================================
+log_info ""
+log_info "=== Multica stack ==="
 
-# Plans-репо writable
-if docker exec multica bash -c "test -w /srv/plans-multica && cd /srv/plans-multica && git status --short" >/dev/null 2>&1; then
-    log_ok "plans-multica writable from container"
-else
-    log_error "plans-multica NOT writable from container"
-    FAILS=$((FAILS+1))
-fi
+if [[ -d "$MULTICA_REPO" ]]; then
+    log_ok "multica repo at $MULTICA_REPO"
 
-# claude binary present
-if docker exec multica which claude >/dev/null 2>&1; then
-    log_ok "claude binary available in container"
+    cd "$MULTICA_REPO"
+
+    # Check expected containers
+    for svc in postgres backend frontend; do
+        container=$(docker ps --filter "label=com.docker.compose.project=multica" \
+                              --filter "label=com.docker.compose.service=$svc" \
+                              --format '{{.Names}}' | head -1)
+        if [[ -n "$container" ]]; then
+            state=$(docker inspect -f '{{.State.Status}}' "$container")
+            if [[ "$state" == "running" ]]; then
+                log_ok "$svc container running ($container)"
+            else
+                log_error "$svc container state: $state"
+                FAILS=$((FAILS+1))
+            fi
+        else
+            log_error "$svc container not found"
+            FAILS=$((FAILS+1))
+        fi
+    done
+
+    # Backend health endpoint
+    if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
+        log_ok "backend /health endpoint responsive"
+    else
+        log_error "backend /health endpoint NOT responsive"
+        FAILS=$((FAILS+1))
+    fi
+
+    # Frontend reachable
+    if curl -sf http://localhost:3000/ >/dev/null 2>&1; then
+        log_ok "frontend reachable on :3000"
+    else
+        log_error "frontend NOT reachable on :3000"
+        FAILS=$((FAILS+1))
+    fi
 else
-    log_error "claude binary NOT in container PATH"
+    log_error "multica repo not cloned (06-multica-stack.sh did not run)"
     FAILS=$((FAILS+1))
 fi
 
 # =============================================================================
-# Section 6: Egress allowlist (negative test — should be BLOCKED)
+# Section 4: multica daemon (systemd unit)
 # =============================================================================
 log_info ""
-log_info "=== Egress allowlist (negative test) ==="
-# The container should NOT be able to reach arbitrary internet, only allowlist.
-if docker exec multica curl -sS -o /dev/null -w "%{http_code}" --max-time 5 https://api.clickavia.com 2>/dev/null | grep -qE '^(0|7)'; then
-    log_ok "container cannot reach api.clickavia.com (egress blocked)"
-elif docker exec multica curl -sS -o /dev/null -w "%{http_code}" --max-time 5 https://api.clickavia.com 2>/dev/null | grep -qE '^[2-5]'; then
-    log_error "container CAN reach api.clickavia.com — egress allowlist failed"
-    FAILS=$((FAILS+1))
-else
-    log_warn "egress test inconclusive"
-fi
+log_info "=== Multica daemon ==="
 
-# Positive test: github.com:443 must work (for git push)
-if docker exec multica curl -sS -o /dev/null -w "%{http_code}" --max-time 5 https://api.github.com 2>/dev/null | grep -qE '^2'; then
-    log_ok "container can reach api.github.com (allowlist works)"
+if systemctl list-unit-files multica-daemon.service >/dev/null 2>&1; then
+    log_ok "multica-daemon.service unit installed"
+
+    if systemctl is-active --quiet multica-daemon.service; then
+        log_ok "multica-daemon running"
+    else
+        log_warn "multica-daemon NOT running (interactive login needed first)"
+        log_info "  $ sudo -u $USERNAME -i multica login"
+        log_info "  $ systemctl start multica-daemon"
+    fi
 else
-    log_error "container CANNOT reach api.github.com — allowlist too strict"
+    log_error "multica-daemon.service not installed"
     FAILS=$((FAILS+1))
 fi
 
 # =============================================================================
-# Section 7: Plans repo — deploy access
+# Section 5: Skills + Claude config
 # =============================================================================
 log_info ""
-log_info "=== Plans repo connectivity ==="
-if [[ -d /srv/plans-multica/.git ]]; then
-    if sudo -u "${MULTICA_USER:-multica}" git -C /srv/plans-multica ls-remote >/dev/null 2>&1; then
+log_info "=== Brainstorm Claude config ==="
+SKILLS_DIR="$USER_HOME/.claude/skills"
+if [[ -d "$SKILLS_DIR" ]]; then
+    n=$(find "$SKILLS_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)
+    log_ok "$n skill(s) deployed in $SKILLS_DIR"
+    for d in "$SKILLS_DIR"/*/; do
+        [[ -f "$d/SKILL.md" ]] && log_info "  /$(basename "$d")"
+    done
+else
+    log_warn "no skills deployed"
+fi
+
+if [[ -f "$USER_HOME/.claude/settings.json" ]]; then
+    log_ok "claude settings.json present (deny/allow rules)"
+else
+    log_warn "claude settings.json NOT present — brainstorm Claude has default permissions"
+fi
+
+# =============================================================================
+# Section 6: Plans repo
+# =============================================================================
+log_info ""
+log_info "=== Plans repo ==="
+PLANS_DIR=/srv/plans-multica
+if [[ -d "$PLANS_DIR/.git" ]]; then
+    log_ok "$PLANS_DIR cloned"
+
+    # Check connectivity (uses fine-grained PAT in git-credentials)
+    if sudo -u "$USERNAME" git -C "$PLANS_DIR" ls-remote >/dev/null 2>&1; then
         log_ok "plans repo HTTPS ls-remote OK (PAT works)"
     else
         log_error "plans repo ls-remote failed — check BRAINSTORM_PAT in .env"
         FAILS=$((FAILS+1))
     fi
 else
-    log_warn "/srv/plans-multica not yet cloned"
+    log_warn "$PLANS_DIR not cloned (04-multica-user.sh may not have run)"
 fi
 
 # =============================================================================
@@ -167,7 +181,16 @@ fi
 log_info ""
 log_info "==================================================================="
 if [[ $FAILS -eq 0 ]]; then
-    log_ok "ALL CHECKS PASSED"
+    log_ok "ALL CRITICAL CHECKS PASSED"
+    log_info ""
+    hostname=$(tailscale status --json 2>/dev/null | jq -r '.Self.HostName // "multica"')
+    magic_dns=$(tailscale status --json 2>/dev/null | jq -r '.MagicDNSSuffix // "tailnet.ts.net"')
+    log_info "Multica accessible at: https://${hostname}.${magic_dns}"
+    log_info ""
+    log_info "Final manual steps:"
+    log_info "  1. sudo -u $USERNAME -i claude /login   # brainstorm Claude OAuth"
+    log_info "  2. sudo -u $USERNAME -i multica login   # multica web account"
+    log_info "  3. systemctl start multica-daemon       # start daemon as service"
     exit 0
 else
     log_error "$FAILS check(s) FAILED"
