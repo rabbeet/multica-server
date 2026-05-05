@@ -36,13 +36,31 @@ fi
 # ---- Tailscale up with auth key ---------------------------------------------
 HOSTNAME_ARG="${TAILSCALE_HOSTNAME:-multica}"
 
+# Try with tag first (only works if tag:multica-host is defined in ACL).
+# Fall back to no tag if ACL hasn't been configured — node still works,
+# just identified by user identity instead of tag.
+TAILS_TAG_ARG="--advertise-tags=tag:multica-host"
+
 log_info "Joining tailnet ${TAILNET_NAME} as '${HOSTNAME_ARG}'..."
-tailscale up \
-    --authkey="${TAILSCALE_AUTHKEY}" \
-    --hostname="${HOSTNAME_ARG}" \
-    --advertise-tags=tag:multica-host \
-    --ssh \
-    --accept-dns=true
+if ! tailscale up \
+        --authkey="${TAILSCALE_AUTHKEY}" \
+        --hostname="${HOSTNAME_ARG}" \
+        $TAILS_TAG_ARG \
+        --ssh \
+        --accept-dns=true 2>&1; then
+    log_warn "Tailscale up with tag failed (likely tag not in ACL)"
+    log_warn "Retrying without --advertise-tags. ACL by user identity only."
+    log_warn "To enable tag-based ACL later: add tag:multica-host to tagOwners"
+    log_warn "  https://login.tailscale.com/admin/acls"
+    log_warn "  Then re-run: tailscale up --advertise-tags=tag:multica-host --reset"
+
+    tailscale up \
+        --authkey="${TAILSCALE_AUTHKEY}" \
+        --hostname="${HOSTNAME_ARG}" \
+        --ssh \
+        --accept-dns=true \
+        --reset
+fi
 
 # ---- Verify ------------------------------------------------------------------
 sleep 2
