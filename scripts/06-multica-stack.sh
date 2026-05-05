@@ -19,6 +19,19 @@ USERNAME="${MULTICA_USER:-multica}"
 USER_HOME=$(getent passwd "$USERNAME" | cut -d: -f6)
 MULTICA_REPO="$USER_HOME/multica"
 
+# ---- Validate POSTGRES_PASSWORD is URL-safe ----
+# The password is embedded into DATABASE_URL like postgres://user:PWD@host:port/db.
+# Chars like /, +, :, @, ? etc break URL parsing in pgx driver. Reject early.
+if [[ "$POSTGRES_PASSWORD" =~ [^A-Za-z0-9_.~-] ]]; then
+    log_error "POSTGRES_PASSWORD contains URL-unsafe characters."
+    log_error "Use only [A-Za-z0-9_.~-]. Regenerate with: openssl rand -hex 32"
+    log_error "Then update .env on server, wipe pg volume, re-run bootstrap:"
+    log_error "  cd $MULTICA_REPO && docker compose -f docker-compose.selfhost.yml down -v"
+    log_error "  rm $MULTICA_REPO/.env"
+    log_error "  ./bootstrap.sh"
+    exit 1
+fi
+
 # ---- Clone multica repo if not yet ----
 if [[ ! -d "$MULTICA_REPO/.git" ]]; then
     log_info "Cloning multica repo into $MULTICA_REPO..."
