@@ -34,17 +34,39 @@ else
     exit 1
 fi
 
-# ---- Verify ----
-if ! command -v claude >/dev/null 2>&1; then
-    # Installer may have put it in /root/.local/bin or similar. Search.
-    found=$(find /root/.local /usr/local /opt -maxdepth 3 -name claude -type f -executable 2>/dev/null | head -1)
-    if [[ -n "$found" ]]; then
-        ln -sf "$found" "$CLAUDE_INSTALL_PATH"
-        log_info "Linked $found -> $CLAUDE_INSTALL_PATH"
-    else
-        log_error "claude binary not found after install"
-        exit 1
+# ---- Locate the installed binary ----
+# Anthropic's installer puts it under ~/.local/bin (= /root/.local/bin when
+# running as root). Symlink to /usr/local/bin/claude so all users (including
+# the `multica` user the daemon runs as) can find it without PATH tricks.
+CLAUDE_BIN=""
+for cand in /root/.local/bin/claude /usr/local/bin/claude /opt/claude/claude; do
+    if [[ -e "$cand" ]]; then
+        CLAUDE_BIN="$cand"
+        break
     fi
+done
+
+if [[ -z "$CLAUDE_BIN" ]]; then
+    # Broader search — covers symlinks too (no -type f restriction)
+    CLAUDE_BIN=$(find /root /usr/local /opt -maxdepth 4 -name claude -executable 2>/dev/null | grep -v '/skills/' | head -1)
+fi
+
+if [[ -z "$CLAUDE_BIN" || ! -e "$CLAUDE_BIN" ]]; then
+    log_error "claude binary not found after install"
+    log_error "Check: ls -la /root/.local/bin/ /usr/local/bin/"
+    exit 1
+fi
+
+# ---- Symlink to /usr/local/bin so any user can find it ----
+if [[ "$CLAUDE_BIN" != "$CLAUDE_INSTALL_PATH" ]]; then
+    ln -sf "$CLAUDE_BIN" "$CLAUDE_INSTALL_PATH"
+    log_info "Symlinked $CLAUDE_BIN -> $CLAUDE_INSTALL_PATH"
+fi
+
+# ---- Verify accessible from PATH ----
+if ! command -v claude >/dev/null 2>&1; then
+    log_error "claude still not in PATH after symlink"
+    exit 1
 fi
 
 log_ok "Installed: $(claude --version 2>/dev/null | head -1)"
