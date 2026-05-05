@@ -45,9 +45,11 @@ require_root() {
 }
 
 # Require .env loaded — pull values into env vars.
+# BASH_SOURCE[0] is _lib.sh itself (in scripts/), so /.. gives repo root
+# regardless of which script called us (bootstrap.sh in root, or scripts/0X-*.sh).
 require_env() {
     local repo_root
-    repo_root=$(cd "$(dirname "${BASH_SOURCE[1]}")/.." && pwd)
+    repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
     if [[ ! -f "$repo_root/.env" ]]; then
         log_error ".env not found at $repo_root/.env — copy from .env.example and fill in"
         exit 1
@@ -73,9 +75,10 @@ require_vars() {
     fi
 }
 
-# Repo root from any script in scripts/.
+# Repo root from any caller (bootstrap.sh in root, scripts/0X-*.sh, etc).
+# BASH_SOURCE[0] is always _lib.sh which lives in scripts/, so /.. = repo root.
 repo_root() {
-    cd "$(dirname "${BASH_SOURCE[1]}")/.." && pwd
+    cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd
 }
 
 # Run a command, retrying with backoff. retry_with_backoff <max> <delay> -- <cmd...>
