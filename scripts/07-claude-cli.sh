@@ -57,10 +57,16 @@ if [[ -z "$CLAUDE_BIN" || ! -e "$CLAUDE_BIN" ]]; then
     exit 1
 fi
 
-# ---- Symlink to /usr/local/bin so any user can find it ----
+# ---- Copy to /usr/local/bin so any user can find it ----
+# We COPY (not symlink) because /root/ is mode 700 — multica user can't
+# traverse it even with a valid symlink target. Copying gives a standalone
+# binary at /usr/local/bin/claude that all users can read+execute.
 if [[ "$CLAUDE_BIN" != "$CLAUDE_INSTALL_PATH" ]]; then
-    ln -sf "$CLAUDE_BIN" "$CLAUDE_INSTALL_PATH"
-    log_info "Symlinked $CLAUDE_BIN -> $CLAUDE_INSTALL_PATH"
+    # Resolve symlinks to a real binary, then copy
+    real_bin=$(readlink -f "$CLAUDE_BIN" 2>/dev/null || echo "$CLAUDE_BIN")
+    cp -f "$real_bin" "$CLAUDE_INSTALL_PATH"
+    chmod 755 "$CLAUDE_INSTALL_PATH"
+    log_info "Copied $real_bin -> $CLAUDE_INSTALL_PATH (chmod 755)"
 fi
 
 # ---- Verify accessible from PATH ----
