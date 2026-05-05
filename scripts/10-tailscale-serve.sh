@@ -34,7 +34,14 @@ tailscale serve reset || true
 
 # ---- Configure HTTPS:443 → multica frontend (localhost:3000) ----
 log_info "Configuring tailscale serve: HTTPS:443 -> localhost:3000 (multica frontend)..."
-tailscale serve --bg --https=443 / http://127.0.0.1:3000
+# Try simplest form first (1.94+); fall back to verbose syntax for older.
+if ! tailscale serve --bg http://localhost:3000 2>/dev/null; then
+    log_info "Simple form failed; trying explicit https:443 form..."
+    if ! tailscale serve --bg https:443 / http://localhost:3000 2>/dev/null; then
+        log_info "Both forms failed; trying --tls-terminated-tcp..."
+        tailscale serve --bg --tls-terminated-tcp=443 tcp://localhost:3000
+    fi
+fi
 
 # ---- Show config ----
 log_info ""
