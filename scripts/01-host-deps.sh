@@ -82,8 +82,32 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 if ! docker compose version >/dev/null 2>&1; then
-    log_error "docker compose plugin not found — install via apt: docker-compose-plugin"
-    exit 1
+    log_info "docker compose plugin not found — installing..."
+
+    # Try apt first (works if Docker's official apt repo is configured)
+    if apt-cache show docker-compose-plugin >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-plugin
+    else
+        # Fallback: install Docker's official apt repo, then the plugin
+        log_info "Docker apt repo not configured — adding it..."
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+            | gpg --dearmor --batch --yes -o /etc/apt/keyrings/docker.gpg
+        chmod a+r /etc/apt/keyrings/docker.gpg
+
+        codename=$(. /etc/os-release; echo "$VERSION_CODENAME")
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $codename stable" \
+            > /etc/apt/sources.list.d/docker.list
+
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-compose-plugin
+    fi
+
+    if ! docker compose version >/dev/null 2>&1; then
+        log_error "docker compose still not working after install attempt"
+        exit 1
+    fi
+    log_ok "docker compose plugin installed"
 fi
 
 log_ok "docker $(docker --version | awk '{print $3}' | tr -d ',') + compose $(docker compose version --short) present"
