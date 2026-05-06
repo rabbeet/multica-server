@@ -25,9 +25,13 @@ if [[ ! -d "$SKILLS_SRC" ]]; then
     exit 1
 fi
 
-# ---- rsync — preserves permissions, removes deleted skills ----
-log_info "Syncing skills $SKILLS_SRC -> $SKILLS_DEST..."
-rsync -a --delete \
+# ---- rsync — additive only (NO --delete) ----
+# Earlier version used --delete which wiped third-party skills the user had
+# installed independently (gstack, etc). We now only add/update our own
+# skills and leave everything else alone. Removing one of our own skills
+# from the repo means it stays on the host until the user wipes it manually.
+log_info "Syncing skills $SKILLS_SRC -> $SKILLS_DEST (additive)..."
+rsync -a \
     --chown="$USERNAME":"$USERNAME" \
     "$SKILLS_SRC/" "$SKILLS_DEST/"
 
