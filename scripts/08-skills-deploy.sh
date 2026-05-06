@@ -46,6 +46,19 @@ if [[ -f "$SETTINGS_SRC" ]]; then
     log_ok "Deployed claude settings.json (deny/allow rules)"
 fi
 
+# ---- Deploy CLAUDE.md system context ----
+# Tells brainstorm-Claude where to find Pulse code + DB schemas on this host
+# so it doesn't fall back to "attach a repo" UX when the user just types a task.
+CLAUDE_MD_SRC="$(repo_root)/config/claude/CLAUDE.md"
+CLAUDE_MD_DEST="$USER_HOME/.claude/CLAUDE.md"
+
+if [[ -f "$CLAUDE_MD_SRC" ]]; then
+    cp "$CLAUDE_MD_SRC" "$CLAUDE_MD_DEST"
+    chown "$USERNAME":"$USERNAME" "$CLAUDE_MD_DEST"
+    chmod 644 "$CLAUDE_MD_DEST"
+    log_ok "Deployed CLAUDE.md (system context for brainstorm-Claude)"
+fi
+
 # ---- List deployed skills ----
 log_info ""
 log_info "Skills deployed in $SKILLS_DEST:"
