@@ -57,24 +57,37 @@ GitHub: rabbeet/plans main updated
    ```
    If empty → tell user "No design doc to publish — run /office-hours first." Exit clean.
 
-3. **Ask user via AskUserQuestion:** "What type is this plan?"
+3. **Determine target project subdir** from `$SLUG`:
+   ```bash
+   case "$SLUG" in
+       rabbeet-Pulse*|clickavia-Pulse|clickavia-Pulse-*) PROJECT="Pulse" ;;
+       rabbeet-multica-server)                            PROJECT="Multica" ;;
+       rabbeet-agent-context)                             PROJECT="Multica" ;;
+       *)                                                 PROJECT="" ;;
+   esac
+   ```
+   If `$PROJECT` is empty → ask user via AskUserQuestion: "Which project does this plan belong to?" Options: existing subdirs in `/srv/plans-multica/` (excluding `templates/`, `archive/`) + "Other (type name)". Whatever they pick becomes `$PROJECT`. If "Other", create `/srv/plans-multica/<name>/` on the fly.
+
+4. **Ask user via AskUserQuestion:** "What type is this plan?"
    - A) feature — full design with alternatives + recommended approach
    - B) bugfix — incident-style: симптом → root cause → fix → regression test
    - C) refactor — scope, motivation, before/after, migration plan
    - D) spike — exploration, success criteria, time budget
 
-4. **Read template** at `/srv/plans-multica/templates/{type}.md`. If template missing, fall back to `feature.md` and warn.
+5. **Read template** at `/srv/plans-multica/templates/{type}.md`. If template missing, fall back to `feature.md` and warn.
 
-5. **Generate plan:**
+6. **Generate plan path** under the project subdir:
    ```bash
    PLAN_ID=$(date +%Y-%m-%d)-$(echo "$DESIGN" | sed 's/.*design-//; s/\.md$//' | tr -cd 'a-z0-9-')
-   PLAN_FILE="/srv/plans-multica/${PLAN_ID}.md"
+   mkdir -p "/srv/plans-multica/${PROJECT}"
+   PLAN_FILE="/srv/plans-multica/${PROJECT}/${PLAN_ID}.md"
    ```
 
-6. **Build frontmatter via yq** (NOT sed — handles multiline, quotes correctly):
+7. **Build frontmatter via yq** (NOT sed — handles multiline, quotes correctly):
    ```yaml
    ---
    id: <PLAN_ID>
+   project: <PROJECT>
    title: <extract from design doc # heading>
    type: feature|bugfix|refactor|spike
    status: ready
@@ -89,16 +102,17 @@ GitHub: rabbeet/plans main updated
    ---
    ```
 
-7. **Concatenate template body + design content:** template provides section headers; design fills them. If sections don't match, append design as-is under "## Design notes" so nothing is lost.
+8. **Concatenate template body + design content:** template provides section headers; design fills them. If sections don't match, append design as-is under "## Design notes" so nothing is lost.
 
-8. **Commit + push:**
+9. **Commit + push:**
    ```bash
    cd /srv/plans-multica
    git add "$PLAN_FILE"
-   git commit -m "publish: $PLAN_ID
+   git commit -m "publish: ${PROJECT}/${PLAN_ID}
 
-   Type: $TYPE
-   Source: $(basename $DESIGN)"
+   Project: $PROJECT
+   Type:    $TYPE
+   Source:  $(basename $DESIGN)"
 
    # Retry once if push fails
    if ! git push origin main; then
@@ -111,14 +125,13 @@ GitHub: rabbeet/plans main updated
    fi
    ```
 
-9. **Tell user:**
-   ```
-   ✓ Published: $PLAN_ID
-   File:       $PLAN_FILE
-   Status:     ready
-   Pickup:     run /pickup-plan in any Pulse worktree on your Mac
-   View:       https://multica-plans.pages.dev/$PLAN_ID
-   ```
+10. **Tell user:**
+    ```
+    ✓ Published: ${PROJECT}/${PLAN_ID}
+    File:       $PLAN_FILE
+    Status:     ready
+    Pickup:     run /pickup-plan in your ~/coding/<project> worktree on Mac
+    ```
 
 ## Edge cases handled
 

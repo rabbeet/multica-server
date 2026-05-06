@@ -1,6 +1,6 @@
 ---
 name: pickup-plan
-description: Use when starting a development session on a Pulse worktree and you want to claim a ready plan from the brainstorm queue. Pulls latest from rabbeet/plans, lists unblocked ready plans, lets you pick one, claims it via optimistic git locking, and loads it into your Claude Code context.
+description: Use when starting a development session in a git worktree and you want to claim a ready plan from the brainstorm queue. Pulls latest from rabbeet/plans, lists unblocked ready plans, lets you pick one, claims it via optimistic git locking, and loads it into your Claude Code context.
 ---
 
 # /pickup-plan
@@ -9,7 +9,7 @@ Claim a ready plan from the brainstorm queue and start implementing it.
 
 ## Where this skill lives
 
-This skill is **deployed on user's Mac**, NOT on the multica server. It runs in tmux sessions inside `~/coding/pulse{,2..3,4,5}` on the Mac. The companion `/publish-plan` runs server-side in the multica brainstorm container.
+This skill is **deployed on user's Mac**, NOT on the multica server. It runs from any git worktree on the Mac (originally Pulse-only, now generic). The companion `/publish-plan` runs server-side in the multica brainstorm container.
 
 Install on Mac:
 ```bash
@@ -19,7 +19,7 @@ cp ~/coding/multica-server/mac-skills/pickup-plan/SKILL.md ~/.claude/skills/pick
 
 ## When to invoke
 
-User has just `cd ~/coding/pulse3 && claude`'d, wants to start work on a fresh task, doesn't want to re-read all 10 brainstorms to remember which is next.
+User has just opened Claude in a git worktree (Pulse, multica-server, or any other repo), wants to start work on a fresh task, doesn't want to re-read all 10 brainstorms to remember which is next.
 
 ## What it does
 
@@ -36,13 +36,13 @@ User has just `cd ~/coding/pulse3 && claude`'d, wants to start work on a fresh t
 [optimistic claim: --force-with-lease=main:<EXPECTED_SHA>]
        │
        ▼ (success)
-[update frontmatter: status=in-progress, assigned_to=pulse3, started_at=<now>]
+[update frontmatter: status=in-progress, assigned_to=<worktree-name>, started_at=<now>]
        │
        ▼
 [push back to plans repo]
        │
        ▼
-[copy plan body into ~/.gstack/projects/pulse/{user}-{branch}-design-{ts}.md
+[copy plan body into ~/.gstack/projects/<project>/{user}-{branch}-design-{ts}.md
  so /executing-plans can pick up from there with full gstack context]
        │
        ▼
@@ -55,12 +55,22 @@ User has just `cd ~/coding/pulse3 && claude`'d, wants to start work on a fresh t
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 1. Determine which worktree we're in
-WORKTREE=$(basename "$PWD")  # e.g. "pulse3"
-if [[ ! "$WORKTREE" =~ ^pulse[0-9]?$ ]]; then
-  echo "Run /pickup-plan from inside ~/coding/pulse[N]"
+# 1. Determine which worktree we're in (any git repo, not just Pulse)
+WORKTREE_DIR=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "Run /pickup-plan from inside a git worktree."
   exit 1
-fi
+}
+WORKTREE=$(basename "$WORKTREE_DIR")  # e.g. "Pulse3", "multica-server"
+
+# Map worktree → project subdir in rabbeet/plans.
+# Pulse2/3/4/5 (and bare "Pulse") all read Pulse/ subdir.
+# multica-server reads Multica/ subdir.
+# Anything else: use worktree name as the project (creates new subdir on publish).
+case "$WORKTREE" in
+    Pulse|Pulse[0-9])           PROJECT="Pulse" ;;
+    multica-server)             PROJECT="Multica" ;;
+    *)                          PROJECT="$WORKTREE" ;;
+esac
 
 # 2. Each worktree has its own clone of plans-репо to avoid race condition
 PLANS_DIR="$HOME/srv/plans-${WORKTREE}"
@@ -78,31 +88,36 @@ while [[ $RETRY -lt $MAX_RETRIES ]]; do
   git reset --hard origin/main
   EXPECT_SHA=$(git rev-parse origin/main)
 
-  # 4. Find ready plans where all blocked_by are shipped
+  # 4. Candidate files: $PROJECT/*.md (primary) + root *.md (legacy)
   CANDIDATES=()
-  for f in *.md; do
-    [[ "$f" == README* ]] && continue
-    [[ "$f" == templates/* ]] && continue
-    [[ "$f" == archive/* ]] && continue
+  shopt -s nullglob
+  PLAN_FILES=( "$PROJECT"/*.md *.md )
+  shopt -u nullglob
 
-    status=$(yq '.status' "$f")
-    [[ "$status" != "ready" ]] && continue
+  for f in "${PLAN_FILES[@]}"; do
+    base=$(basename "$f")
+    [[ "$base" == README* ]] && continue
 
-    # Check zombie: status:in-progress but tmux session dead
+    status=$(yq '.status' "$f" 2>/dev/null || echo "null")
+    [[ "$status" == "null" ]] && continue   # not a plan file (e.g. Multica/README.md)
+
+    # Zombie: status:in-progress but tmux session dead → still surface
     if [[ "$status" == "in-progress" ]]; then
       assigned=$(yq '.assigned_to' "$f")
       if [[ "$assigned" != "null" ]] && ! tmux has-session -t "$assigned" 2>/dev/null; then
-        # Zombie — show as recoverable
         CANDIDATES+=("$f|zombie|$(yq '.title' "$f")")
-        continue
       fi
+      continue
     fi
 
-    # Check blocked_by graph: all deps must be status:shipped
+    [[ "$status" != "ready" ]] && continue
+
+    # blocked_by graph: all deps must be status:shipped
     deps=$(yq '.blocked_by[]' "$f" 2>/dev/null || echo "")
     blocked=false
     for dep_id in $deps; do
-      dep_file=$(find . -maxdepth 1 -name "${dep_id}.md" -o -path "./archive/${dep_id}.md" | head -1)
+      # Search across project subdirs + root + archive
+      dep_file=$(find . -maxdepth 2 -name "${dep_id}.md" 2>/dev/null | head -1)
       if [[ -z "$dep_file" ]]; then
         echo "WARN: $f references unknown dep $dep_id — skipping"
         blocked=true; break
@@ -118,7 +133,7 @@ while [[ $RETRY -lt $MAX_RETRIES ]]; do
   done
 
   if [[ ${#CANDIDATES[@]} -eq 0 ]]; then
-    echo "No ready plans — brainstorm something! /office-hours in multica."
+    echo "No ready plans for $PROJECT — brainstorm something! /office-hours in multica."
     exit 0
   fi
 
@@ -150,11 +165,11 @@ fi
 
 # 8. Stage the plan into gstack format so /executing-plans picks it up
 SLUG=$(~/.claude/skills/gstack/bin/gstack-slug 2>/dev/null | sed 's/.*=//')
-GSTACK_DIR="$HOME/.gstack/projects/${SLUG:-pulse}"
+GSTACK_DIR="$HOME/.gstack/projects/${SLUG:-$WORKTREE}"
 mkdir -p "$GSTACK_DIR"
 
 USER=$(whoami)
-BRANCH=$(git -C ~/coding/$WORKTREE branch --show-current 2>/dev/null || echo "main")
+BRANCH=$(git -C "$WORKTREE_DIR" branch --show-current 2>/dev/null || echo "main")
 DATETIME=$(date +%Y%m%d-%H%M%S)
 DEST="$GSTACK_DIR/${USER}-${BRANCH}-design-${DATETIME}.md"
 
@@ -180,5 +195,6 @@ echo "Next: /executing-plans"
 ## What it does NOT do
 
 - Does NOT execute the plan — that's `/executing-plans`. This skill just claims and stages.
-- Does NOT run on the multica server — Pulse worktrees live on Mac.
-- Does NOT modify Pulse code — only writes to plans-repo and gstack project dir.
+- Does NOT run on the multica server — runs on Mac, inside a git worktree.
+- Does NOT modify your project's code — only writes to the plans repo and gstack project dir.
+- Does NOT filter plans by project. All plans in `rabbeet/plans` are listed; you pick what's relevant by title.
