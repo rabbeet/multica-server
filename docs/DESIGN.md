@@ -104,17 +104,34 @@ Multica решает реальные проблемы (workspace management, ob
   Multica + tinyproxy + Caddy в Docker
 ```
 
-## Security Model (5 layers)
+## Security Model (7 layers)
 
-L1 **Filesystem**: brainstorm-Claude container — Pulse-репо `:ro`, `/srv/plans` `:rw`, `read_only: true` rootfs, `cap_drop: ALL`, UID 1001, никаких mount'ов `~/.ssh`, `~/.forge`, `~/.gh`, `**/.env*`.
+> **Layer count revised:** original design specified 5 layers in a containerized
+> deployment. Post-pivot to host-process daemon (commit `0e9f447`), L1 changed
+> shape (file-mode ownership replaces container :ro mounts), and the Pulse-code
+> + agent-context extension added L6/L7. See [DEPLOYMENT_CONTEXT.md](DEPLOYMENT_CONTEXT.md)
+> and the 2026-05-06 design extension in `.gstack/projects/rabbeet-multica-server/`.
 
-L2 **Network egress**: tinyproxy с allowlist (`api.anthropic.com`, `github.com` для git push в plans, tailnet hosts). Container в Docker network без default gateway.
+L1 **Filesystem (host file mode)**: brainstorm-Claude runs as user `multica` on host (NOT in a container after the official-selfhost pivot). Read-only-ness is enforced at the OS level: `/srv/plans-multica/` owned by `multica` (rw), `/srv/pulse-code/` and `/srv/agent-context/` owned by `root:multica` mode 750 (multica reads, only root writes via the systemd pull timer). User `multica` has no shell access to host secrets — `~/.ssh/` is empty, no `.forge`, no Pulse `.env`.
 
-L3 **Claude permissions** (`settings.json`): deny ssh/scp/forge/curl/psql/etc, allow только Read/Edit в /srv/plans + /workdir/pulse.
+L2 **Network egress**: tinyproxy with allowlist (`api.anthropic.com`, `github.com` for plans-repo push, tailnet hosts). Multica daemon shells out to `claude` and `multica` CLIs which honor egress proxy via env vars.
 
-L4 **DB access**: Никакого. Claude читает `docs/business/database-schema.md` (уже есть), не подключается к prod БД.
+L3 **Claude permissions** (`config/claude/settings.json`, deployed to `~multica/.claude/settings.json`): deny ssh/scp/forge/curl/psql/etc; allow Read on `/srv/plans-multica/**`, `/srv/pulse-code/**`, `/srv/agent-context/**`; allow Edit/Write only on `/srv/plans-multica/**`. `:ro` paths are double-protected — file mode + Claude permission.
 
-L5 **Git deploy keys**: SSH-ключ привязан только к plans-репо (Allow write access). Pulse-репо для этого ключа не существует.
+L4 **DB access**: None. Brainstorm-Claude never connects directly to PG/CH. All database context arrives as static markdown via L7 → L6 pipeline.
+
+L5 **Git creds (plans-repo write)**: `BRAINSTORM_PAT` — fine-grained PAT, contents:write on `rabbeet/plans` only. Stored in `~multica/.git-credentials` (mode 600). 90-day expiry, rotation reminder via tailscale key-expiry watchdog pattern.
+
+L6 **Git creds (Pulse + agent-context read)**: two fine-grained PATs, each scoped to one repo, contents:read only. Stored in `/root/.git-credentials` (mode 600), used by the host's systemd timer — **never readable by user `multica`**. Multica reads the resulting clones, not the PATs.
+
+| PAT | Repo | Scope | Stored at |
+|---|---|---|---|
+| `PULSE_READONLY_PAT` | `rabbeet/Pulse` | contents:read | `/root/.git-credentials` (host) |
+| `AGENT_CONTEXT_READONLY_PAT` | `rabbeet/agent-context` | contents:read | `/root/.git-credentials` (host) |
+
+L7 **agent-context dump pipeline** (Pulse Forge → `rabbeet/agent-context`): the actual database queries (PG schema introspection + CH `uniqHLL12()` cardinality stats) run on Pulse Forge prod where DB creds already exist. Output is PII-screened markdown pushed to `rabbeet/agent-context` via `AGENT_CONTEXT_PUSH_PAT` (write-scoped to that repo only). Path-guard CI enforces that each project pushes only its own subdir. Multica never sees the push PAT and never queries databases directly.
+
+**Defense in depth.** L4 and L7 both guarantee multica → DB isolation. L1 and L3 both prevent multica from writing to Pulse code. L6 (read PAT) and L5 (write PAT) cannot escalate into each other — they live under different system users with different credential files.
 
 ## Network Access (Tailscale)
 

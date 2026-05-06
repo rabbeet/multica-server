@@ -176,6 +176,62 @@ else
 fi
 
 # =============================================================================
+# Section 7: Context clones (Pulse code + agent-context)
+# =============================================================================
+log_info ""
+log_info "=== Context clones ==="
+
+PULSE_DIR=/srv/pulse-code
+CTX_DIR=/srv/agent-context
+
+for d in "$PULSE_DIR" "$CTX_DIR"; do
+    if [[ -d "$d/.git" ]]; then
+        sha=$(git -C "$d" rev-parse --short HEAD 2>/dev/null || echo "?")
+        log_ok "$d cloned @ $sha"
+    else
+        log_warn "$d not cloned (13-context-clones.sh did not run yet)"
+    fi
+done
+
+if systemctl list-unit-files multica-context-pull.timer >/dev/null 2>&1; then
+    if systemctl is-active --quiet multica-context-pull.timer; then
+        next=$(systemctl show multica-context-pull.timer -p NextElapseUSecRealtime --value)
+        log_ok "multica-context-pull.timer active (next: $next)"
+    else
+        log_warn "multica-context-pull.timer installed but not active"
+    fi
+else
+    log_warn "multica-context-pull.timer not installed (13-context-clones.sh did not run)"
+fi
+
+# Staleness check on agent-context/pulse/INDEX.md
+INDEX="$CTX_DIR/pulse/INDEX.md"
+STALE_HOURS_THRESHOLD=30
+
+if [[ -f "$INDEX" ]]; then
+    last_dump=$(grep -m1 -E '^last_dump_at:' "$INDEX" 2>/dev/null | sed 's/^last_dump_at:[[:space:]]*//' | tr -d '"')
+    if [[ -n "$last_dump" ]]; then
+        last_epoch=$(date -d "$last_dump" +%s 2>/dev/null || echo 0)
+        now_epoch=$(date +%s)
+        if [[ "$last_epoch" -gt 0 ]]; then
+            age_hours=$(( (now_epoch - last_epoch) / 3600 ))
+            if [[ $age_hours -ge $STALE_HOURS_THRESHOLD ]]; then
+                log_error "agent-context/pulse stale: last_dump_at=$last_dump (${age_hours}h ago, threshold=${STALE_HOURS_THRESHOLD}h)"
+                FAILS=$((FAILS+1))
+            else
+                log_ok "agent-context/pulse fresh: ${age_hours}h ago"
+            fi
+        else
+            log_warn "Could not parse last_dump_at='$last_dump'"
+        fi
+    else
+        log_warn "INDEX.md present but no last_dump_at field"
+    fi
+else
+    log_warn "$INDEX not present yet (Pulse Forge dump may not have run)"
+fi
+
+# =============================================================================
 # Summary
 # =============================================================================
 log_info ""

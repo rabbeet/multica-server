@@ -21,7 +21,8 @@ When you run `./bootstrap.sh` on a fresh (or reasonably-clean) Ubuntu 24.04 host
 7. Deploys multica + tinyproxy (egress allowlist) + caddy (TLS via Tailscale MagicDNS) via `docker compose up -d`.
 8. Installs gstack-style skills (`/publish-plan`, `/archive-plan`) into the multica container.
 9. Sets up daily PostgreSQL backups via systemd timer (retention configurable).
-10. Verifies everything via `99-verify.sh`.
+10. (Optional) Clones `rabbeet/Pulse` (`:ro`) and `rabbeet/agent-context` (`:ro`, auto-generated DB schema dumps) into `/srv/` and installs an hourly `git fetch + reset --hard` timer — lets the brainstorm Claude reference real Pulse code + DB stats during travel-mode planning. Skips cleanly if `PULSE_READONLY_PAT` / `AGENT_CONTEXT_READONLY_PAT` are not in `.env`.
+11. Verifies everything via `99-verify.sh`.
 
 Re-running `./bootstrap.sh` is safe — every script is idempotent and short-circuits when its work is already done.
 

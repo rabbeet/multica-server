@@ -64,8 +64,9 @@
 
     "allow": [
       "Read(/srv/plans-multica/**)",
-      "Read(/workdir/pulse-docs/**)",
-      "Read(/home/claude/.claude/skills/**)",
+      "Read(/srv/pulse-code/**)",
+      "Read(/srv/agent-context/**)",
+      "Read(/home/multica/.claude/skills/**)",
 
       "Edit(/srv/plans-multica/**)",
       "Write(/srv/plans-multica/**)",
@@ -87,10 +88,19 @@
       "Bash(grep *)",
       "Bash(rg *)",
       "Bash(find /srv/plans-multica*)",
-      "Bash(find /workdir/pulse-docs*)",
+      "Bash(find /srv/pulse-code*)",
+      "Bash(find /srv/agent-context*)",
       "Bash(ls *)",
       "Bash(cat /srv/plans-multica/**)",
-      "Bash(cat /workdir/pulse-docs/**)",
+      "Bash(cat /srv/pulse-code/**)",
+      "Bash(cat /srv/agent-context/**)",
+      "Bash(git -C /srv/pulse-code log*)",
+      "Bash(git -C /srv/pulse-code show*)",
+      "Bash(git -C /srv/pulse-code diff*)",
+      "Bash(git -C /srv/pulse-code blame*)",
+      "Bash(git -C /srv/agent-context log*)",
+      "Bash(git -C /srv/agent-context show*)",
+      "Bash(git -C /srv/agent-context diff*)",
       "Bash(date *)",
       "Bash(echo *)",
 

@@ -47,6 +47,15 @@ This means **multica-server scope shrinks**:
 - Lock #2 (Eng review): port mapping `pulse=8000…pulse5=8004` — not relevant on Contabo.
 - Lock #4 (5 worktrees RAM budget): does not apply on this host (no worktrees here). Validation moves to user's Mac.
 
+### ADDED 2026-05-06 (Pulse-context extension)
+
+- `scripts/13-context-clones.sh` — clones `rabbeet/Pulse` (main, depth=1) → `/srv/pulse-code/` and `rabbeet/agent-context` (full) → `/srv/agent-context/`. Both owned `root:multica` 750. Installs `multica-context-pull.timer` (hourly + on boot) for `git fetch + reset --hard origin/main`. PATs land in `/root/.git-credentials` (mode 600), never visible to user `multica`.
+- New env vars required: `PULSE_READONLY_PAT`, `AGENT_CONTEXT_READONLY_PAT` (both fine-grained, contents:read, single-repo scope, 90d expiry).
+- Optional override env vars (defaults shown): `PULSE_REPO_HTTPS=https://github.com/rabbeet/Pulse.git`, `AGENT_CONTEXT_REPO_HTTPS=https://github.com/rabbeet/agent-context.git`.
+- `99-verify.sh` Section 7 — checks both clones exist, timer is active, and `agent-context/pulse/INDEX.md` `last_dump_at` is fresh (<30h).
+- `config/claude/settings.json` — adds `Read(/srv/pulse-code/**)` + `Read(/srv/agent-context/**)` to allow list. Edit/Write on these paths NOT in allow → file mode + Claude permission both enforce read-only.
+- See `.gstack/projects/rabbeet-multica-server/rabbeeet-main-design-20260506-120148.md` for the full design rationale (CEO + Eng + outside-voice cleared).
+
 ### KEPT from bootstrap
 
 - `scripts/01-host-deps.sh` — slimmer (docker, fail2ban already present; install yq, tailscale, mosh, tmux, direnv, jq).
