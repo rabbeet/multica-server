@@ -22,7 +22,6 @@ When you run `./bootstrap.sh` on a fresh (or reasonably-clean) Ubuntu 24.04 host
 8. Installs gstack-style skills (`/publish-plan`, `/archive-plan`) into the multica container.
 9. Sets up daily PostgreSQL backups via systemd timer (retention configurable).
 10. (Optional) Clones `rabbeet/Pulse` (`:ro`) and `rabbeet/agent-context` (`:ro`, auto-generated DB schema dumps) into `/srv/` and installs an hourly `git fetch + reset --hard` timer — lets the brainstorm Claude reference real Pulse code + DB stats during travel-mode planning. Skips cleanly if `PULSE_READONLY_PAT` / `AGENT_CONTEXT_READONLY_PAT` are not in `.env`.
-12. (Optional, A-lite worker stack) Brings up the `agent-host` container — one always-on Docker container hosting N concurrent claude processes via `CLAUDE_CONFIG_DIR` + git worktrees from `/srv/pulse-bare.git`. Multica daemon dispatches per-workspace via `docker exec`. Each agent gets full project access: read-only PROD PG/CH (hard limits), per-N dev-PG sidecar for migration testing, push to `agent-*/feature/*` branches only. Replaces the old brainstorm → /pickup-plan handoff with single-agent end-to-end flow. Skips cleanly if `AGENT_PULSE_PAT` / `AGENT_PLANS_PAT` not set. See `agent/README.md`.
 11. Verifies everything via `99-verify.sh`.
 
 Re-running `./bootstrap.sh` is safe — every script is idempotent and short-circuits when its work is already done.

@@ -48,43 +48,4 @@ log_info ""
 log_info "Container memory (top consumers):"
 docker stats --no-stream --format "  {{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}" 2>/dev/null | head -10 || log_skip "docker stats not available (may need root)"
 
-# ---- Agent stack scaling check (design Eng Issue 4.1) ------------------------
-# When N=3 concurrent claude processes are anticipated, agent-host needs 6G not 4G.
-# Detect the configured limit + the OAuth-config dirs that exist, warn on mismatch.
-if docker ps --filter "name=^agent-host$" --format '{{.Names}}' 2>/dev/null | grep -q agent-host; then
-    log_info ""
-    log_info "Agent stack (A-lite) scaling:"
-
-    # Container memory limit (HostConfig.Memory is bytes; 0 = unlimited)
-    mem_limit_bytes=$(docker inspect agent-host --format '{{.HostConfig.Memory}}' 2>/dev/null || echo 0)
-    if [[ $mem_limit_bytes -eq 0 ]]; then
-        log_skip "  agent-host has no memory limit set"
-    else
-        mem_limit_g=$(( mem_limit_bytes / 1073741824 ))
-        log_info "  agent-host memory limit: ${mem_limit_g}G"
-
-        # Count agents with OAuth configured (each has its own subdir under ~/.claude/)
-        n_agents=$(docker exec agent-host bash -c \
-            'find /home/agent/.claude -maxdepth 1 -mindepth 1 -type d \
-                ! -name backups ! -name projects ! -name sessions \
-                -exec test -f "{}/.claude.json" \; -print 2>/dev/null | wc -l' 2>/dev/null || echo 0)
-        log_info "  agents with OAuth configured: $n_agents"
-
-        if [[ $n_agents -ge 3 && $mem_limit_g -lt 6 ]]; then
-            log_warn "N=$n_agents agents but agent-host memory limit is only ${mem_limit_g}G."
-            log_warn "Per design Eng Issue 4.1: bump compose memory to 6G for N=3 (each claude ~1G under load)."
-            log_warn "Edit agent/compose.yml: agent-host -> deploy.resources.limits.memory: 6G"
-        elif [[ $n_agents -le 2 && $mem_limit_g -ge 4 ]]; then
-            log_ok "N=$n_agents agents fit in ${mem_limit_g}G ceiling"
-        fi
-    fi
-
-    # Free memory check (must remain >= 8 GiB after agent stack runs)
-    if [[ $avail_mb -lt 8000 ]]; then
-        log_warn "<8GB available with agent stack running. If N grows, consider:"
-        log_warn "  - Reduce N (kill an agent's OAuth, restart container)"
-        log_warn "  - Bump host RAM (Contabo plan upgrade)"
-    fi
-fi
-
-log_ok "12-validate-resources complete"
+log_ok "09-validate-resources complete"
