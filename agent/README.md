@@ -3,6 +3,14 @@
 One always-on Docker container (`agent-host`) hosts N concurrent claude processes,
 each isolated by `CLAUDE_CONFIG_DIR` + git worktree from `/srv/pulse-bare.git`.
 
+**First time deploying on the server?** Read `INSTALL.md` first — it covers the
+naming-conflict gotcha (`/opt/multica-server/` ≠ this infra repo) and the
+`/opt/multica-infra/` install path.
+
+**Updating an existing deployment?** `sudo /opt/deploy-agent.sh` (analog of
+`/opt/deploy-multica.sh` for the agent stack). The script symlinks to
+`agent/deploy.sh` in this repo.
+
 Multica daemon dispatches per-workspace by calling:
 
 ```bash
