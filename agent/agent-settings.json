@@ -46,7 +46,6 @@
 
       "Bash(psql *postgres://pulse_admin*)",
       "Bash(psql -h * -U postgres*)",
-      "Bash(clickhouse * --user default*)",
 
       "Read(/home/multica/.ssh/*)",
       "Read(/home/multica/.gnupg/*)",
@@ -108,8 +107,20 @@
       "Bash(gh issue comment*)",
 
       "Bash(psql postgres://pulse_agent_ro*)",
+      "Bash(psql postgres://pulse:*)",
+      "Bash(psql $PULSE_PG_DSN*)",
+      "Bash(psql $PULSE_PG_RW_DSN*)",
       "Bash(clickhouse client * --user agent_ro*)",
       "Bash(clickhouse * --user agent_ro*)",
+      "Bash(clickhouse-client *qx3928je2m*)",
+      "Bash(clickhouse-client *gun6oba24c*)",
+      "Bash(clickhouse-client --connection $CH_PULSE_DSN*)",
+      "Bash(redis-cli -h 127.0.0.1*)",
+      "Bash(redis-cli -u $REDIS_URL*)",
+      "Bash(op inject *)",
+      "Bash(op read *)",
+      "Bash(op item get *)",
+      "Bash(op vault list*)",
 
       "Bash(yq *)",
       "Bash(jq *)",
