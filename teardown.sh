@@ -9,7 +9,8 @@
 #
 # Removed:
 #   - All containers (multica, tinyproxy, caddy)
-#   - Named volumes (claude-brainstorm-config, multica-data)
+#   - All agent containers (agent-host, agent-tinyproxy, pg-agent-1, pg-agent-2)
+#   - Named volumes (claude-brainstorm-config, multica-data, claude-agent-config)
 #   - tinyproxy & caddy state
 #
 # Use case: clean state before re-bootstrap, OR final shutdown for migration.
@@ -41,11 +42,20 @@ else
 fi
 
 # ---- Stop and remove containers ----------------------------------------------
-log_info "Stopping docker stack..."
+log_info "Stopping multica docker stack..."
 $SUDO docker compose down --volumes --remove-orphans || log_warn "compose down had issues (probably already stopped)"
 
+# ---- Stop agent stack (A-lite, separate compose) -----------------------------
+if [[ -f "$REPO_ROOT/agent/compose.yml" ]]; then
+    log_info "Stopping agent stack..."
+    $SUDO docker compose -f "$REPO_ROOT/agent/compose.yml" down --remove-orphans \
+        || log_warn "agent compose down had issues (probably already stopped)"
+fi
+
 # ---- Remove named volumes (paranoid double-check) ----------------------------
-for vol in claude-brainstorm-config multica-data caddy-data caddy-config tinyproxy-state; do
+# Includes claude-agent-config — destructive; users must re-login to all N agents.
+for vol in claude-brainstorm-config multica-data caddy-data caddy-config tinyproxy-state \
+           claude-agent-config multica-agent_claude-agent-config; do
     if $SUDO docker volume inspect "$vol" >/dev/null 2>&1; then
         $SUDO docker volume rm "$vol" || log_warn "Could not remove volume $vol"
     fi
@@ -61,5 +71,9 @@ log_info "  - /var/backups/multica/ (delete with: sudo rm -rf /var/backups/multi
 log_info "  - Tailscale node registration (revoke at admin.tailscale.com if desired)"
 log_info "  - Linux user multica (delete with: sudo userdel -r multica)"
 log_info "  - Swapfile $SWAPFILE_PATH (deactivate with: sudo swapoff $SWAPFILE_PATH && sudo rm $SWAPFILE_PATH)"
+log_info "  - /srv/pulse-bare.git (agent's bare clone — delete with: sudo rm -rf /srv/pulse-bare.git)"
+log_info "  - /srv/agent-worktrees (delete with: sudo rm -rf /srv/agent-worktrees)"
+log_info "  - /var/log/agent (delete with: sudo rm -rf /var/log/agent)"
+log_info "  - pulse_agent_ro PG role (drop with: sudo -u postgres psql -d pulse -c 'DROP ROLE pulse_agent_ro')"
 log_info ""
 log_ok "Teardown complete. Re-run ./bootstrap.sh when ready."

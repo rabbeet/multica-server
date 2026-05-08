@@ -232,6 +232,96 @@ else
 fi
 
 # =============================================================================
+# Section 8: Agent worker stack (A-lite — added 2026-05-08)
+# =============================================================================
+log_info ""
+log_info "=== Agent worker stack (A-lite) ==="
+
+if docker ps --filter "name=^agent-host$" --format '{{.Names}}' | grep -q agent-host; then
+    state=$(docker inspect agent-host --format '{{.State.Status}}' 2>/dev/null)
+    if [[ "$state" == "running" ]]; then
+        health=$(docker inspect agent-host --format '{{.State.Health.Status}}' 2>/dev/null || echo "no-healthcheck")
+        log_ok "agent-host running (health: $health)"
+
+        # Smoke: claude binary present + version
+        if docker exec agent-host claude --version >/dev/null 2>&1; then
+            log_ok "agent-host: claude --version OK"
+        else
+            log_error "agent-host: claude --version FAILED"
+            FAILS=$((FAILS+1))
+        fi
+
+        # Smoke: bare clone reachable
+        if docker exec agent-host test -d /srv/pulse-bare.git; then
+            log_ok "agent-host: /srv/pulse-bare.git mounted"
+        else
+            log_error "agent-host: /srv/pulse-bare.git NOT mounted"
+            FAILS=$((FAILS+1))
+        fi
+
+        # Smoke: dev-PG sidecars healthy
+        for n in 1 2; do
+            if docker ps --filter "name=^pg-agent-${n}$" --format '{{.Names}}' | grep -q "pg-agent-${n}"; then
+                phealth=$(docker inspect "pg-agent-${n}" --format '{{.State.Health.Status}}' 2>/dev/null || echo "unknown")
+                if [[ "$phealth" == "healthy" ]]; then
+                    log_ok "pg-agent-${n} healthy"
+                else
+                    log_warn "pg-agent-${n} health: $phealth"
+                fi
+            else
+                log_warn "pg-agent-${n} not running (skip if N=1)"
+            fi
+        done
+
+        # Smoke: read-only role can't DROP TABLE on host PG (if pulse_agent_ro exists)
+        if [[ -n "${PULSE_AGENT_RO_PW:-}" ]]; then
+            DSN="postgres://pulse_agent_ro:${PULSE_AGENT_RO_PW}@host.docker.internal:5432/${PULSE_AGENT_RO_DB:-pulse}?sslmode=disable"
+            if docker exec agent-host psql "$DSN" -tAc "DROP TABLE _agent_smoke_attempt" 2>&1 | grep -qi 'read-only'; then
+                log_ok "agent-host: write attempt rejected (read-only role enforced)"
+            else
+                log_warn "agent-host: read-only smoke check inconclusive (table may not exist; check manually)"
+            fi
+
+            # Smoke: statement_timeout enforced
+            if docker exec agent-host bash -c "psql '$DSN' -tAc 'SELECT pg_sleep(10)' 2>&1 | head -2" \
+                 | grep -qi 'canceling statement\|statement timeout'; then
+                log_ok "agent-host: statement_timeout=5s enforced"
+            else
+                log_warn "agent-host: statement_timeout smoke check inconclusive"
+            fi
+        else
+            log_skip "PULSE_AGENT_RO_PW unset — skipping read-only role smoke checks"
+        fi
+
+        # Tinyproxy egress allowlist
+        if docker ps --filter "name=^agent-tinyproxy$" --format '{{.Names}}' | grep -q tinyproxy; then
+            log_ok "agent-tinyproxy running"
+        else
+            log_error "agent-tinyproxy NOT running — agents have no egress"
+            FAILS=$((FAILS+1))
+        fi
+
+    else
+        log_error "agent-host state: $state"
+        FAILS=$((FAILS+1))
+    fi
+else
+    log_warn "agent-host not running (14-agent-workers.sh did not run yet, or PATs not set)"
+fi
+
+# Bare clone on host
+if [[ -d /srv/pulse-bare.git ]]; then
+    if git -C /srv/pulse-bare.git rev-parse HEAD >/dev/null 2>&1; then
+        sha=$(git -C /srv/pulse-bare.git rev-parse --short HEAD)
+        log_ok "/srv/pulse-bare.git @ $sha"
+    else
+        log_warn "/srv/pulse-bare.git exists but git operations fail"
+    fi
+else
+    log_warn "/srv/pulse-bare.git not present (14-agent-workers.sh did not run)"
+fi
+
+# =============================================================================
 # Summary
 # =============================================================================
 log_info ""
