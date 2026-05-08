@@ -23,15 +23,13 @@ Tracked from `/plan-ceo-review` 2026-05-08 on design `rabbeeet-main-design-20260
 
 ---
 
-## P1: Settings.json deny list extension inside agent container
+## ~~P1: Settings.json deny list extension inside agent container~~ — DONE
 
-**What:** Extend `config/claude/settings.json` deny list to include `git remote add`, `git remote set-url`, `gh repo create`, `gh repo clone <not-allowed-repo>`.
+**Status:** Implemented in `agent/agent-settings.json` (commit aa867bb's predecessor d9086df).
 
-**Why:** Outside-voice review surfaced prompt-injection vector — malicious string in a Pulse PR description, agent-context dump, or read-only file could try to get the agent to push code to an attacker-controlled repo. Tinyproxy egress allowlist mitigates exfiltration to non-allowed hosts but explicit Claude-level deny is cheaper second layer.
+Deny list includes: `Bash(git remote add *)`, `Bash(git remote set-url *)`, `Bash(gh repo create *)`, `Bash(gh repo delete *)`, `Bash(gh repo fork *)`, `Bash(git push --force*)`, `Bash(git push -f *)`, push to main/master, force push.
 
-**Effort:** Human ~5 min / CC ~2 min (5-line addition to settings.json).
-**Priority:** P1 — ship as part of Step 2 (worker rollout).
-**Blocks:** Nothing critical, but should ship with first agent.
+**Note:** This is the agent-specific settings.json (bind-mounted at `/etc/agent-settings.json`), separate from the brainstorm-Claude `config/claude/settings.json` which keeps its own (more restrictive) deny list.
 
 ---
 
