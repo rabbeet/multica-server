@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "defaultMode": "default",
+
+    "deny": [
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(rsync *)",
+      "Bash(sftp *)",
+
+      "Bash(forge *)",
+      "Bash(gh ssh-key *)",
+      "Bash(gh repo create *)",
+      "Bash(gh repo delete *)",
+      "Bash(gh repo fork *)",
+      "Bash(gh secret *)",
+      "Bash(gh release *)",
+
+      "Bash(npm publish *)",
+      "Bash(yarn publish *)",
+      "Bash(bun publish *)",
+
+      "Bash(git push origin main*)",
+      "Bash(git push origin master*)",
+      "Bash(git push * main)",
+      "Bash(git push * master)",
+      "Bash(git push --force*)",
+      "Bash(git push -f *)",
+
+      "Bash(git remote add *)",
+      "Bash(git remote set-url *)",
+
+      "Bash(sudo *)",
+      "Bash(su -*)",
+      "Bash(chown *)",
+      "Bash(chmod 7*)",
+
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf $HOME*)",
+      "Bash(rm -rf ~*)",
+
+      "Bash(curl *api.openai.com*)",
+      "Bash(curl *api.telegram.org*)",
+      "Bash(wget *api.openai.com*)",
+
+      "Bash(psql *postgres://pulse_admin*)",
+      "Bash(psql -h * -U postgres*)",
+      "Bash(clickhouse * --user default*)",
+
+      "Read(/home/multica/.ssh/*)",
+      "Read(/home/multica/.gnupg/*)",
+      "Read(/home/multica/.git-credentials*)",
+      "Read(/etc/passwd)",
+      "Read(/etc/shadow)",
+      "Read(**/.env*)",
+      "Read(**/credentials*)",
+      "Read(**/.aws/*)",
+      "Read(**/.gh/*)",
+
+      "Read(/srv/pulse-bare.git/**)",
+      "Read(/srv/pulse-bare/**)"
+    ],
+
+    "allow": [
+      "Read(/srv/agent-worktrees/**)",
+      "Edit(/srv/agent-worktrees/**)",
+      "Write(/srv/agent-worktrees/**)",
+
+      "Read(/srv/pulse-code/**)",
+      "Read(/srv/agent-context/**)",
+      "Read(/srv/plans-multica/**)",
+      "Edit(/srv/plans-multica/**)",
+      "Write(/srv/plans-multica/**)",
+      "Read(/home/multica/.claude/skills/**)",
+
+      "Bash(git -C /srv/agent-worktrees/* status*)",
+      "Bash(git -C /srv/agent-worktrees/* log*)",
+      "Bash(git -C /srv/agent-worktrees/* diff*)",
+      "Bash(git -C /srv/agent-worktrees/* show*)",
+      "Bash(git -C /srv/agent-worktrees/* fetch*)",
+      "Bash(git -C /srv/agent-worktrees/* pull*)",
+      "Bash(git -C /srv/agent-worktrees/* add *)",
+      "Bash(git -C /srv/agent-worktrees/* commit *)",
+      "Bash(git -C /srv/agent-worktrees/* push origin agent-*)",
+      "Bash(git -C /srv/agent-worktrees/* push origin feature/*)",
+      "Bash(git -C /srv/agent-worktrees/* push origin HEAD*)",
+      "Bash(git -C /srv/agent-worktrees/* branch*)",
+      "Bash(git -C /srv/agent-worktrees/* checkout*)",
+      "Bash(git -C /srv/agent-worktrees/* stash*)",
+      "Bash(git -C /srv/agent-worktrees/* worktree*)",
+
+      "Bash(git -C /srv/plans-multica add *)",
+      "Bash(git -C /srv/plans-multica commit *)",
+      "Bash(git -C /srv/plans-multica push *)",
+      "Bash(git -C /srv/plans-multica fetch*)",
+      "Bash(git -C /srv/plans-multica pull*)",
+
+      "Bash(gh pr create*)",
+      "Bash(gh pr view*)",
+      "Bash(gh pr list*)",
+      "Bash(gh pr edit*)",
+      "Bash(gh pr comment*)",
+      "Bash(gh pr diff*)",
+      "Bash(gh pr checks*)",
+      "Bash(gh issue view*)",
+      "Bash(gh issue list*)",
+      "Bash(gh issue comment*)",
+
+      "Bash(psql postgres://pulse_agent_ro*)",
+      "Bash(clickhouse client * --user agent_ro*)",
+      "Bash(clickhouse * --user agent_ro*)",
+
+      "Bash(yq *)",
+      "Bash(jq *)",
+      "Bash(grep *)",
+      "Bash(rg *)",
+      "Bash(find /srv/agent-worktrees*)",
+      "Bash(find /srv/pulse-code*)",
+      "Bash(find /srv/agent-context*)",
+      "Bash(find /srv/plans-multica*)",
+      "Bash(ls *)",
+      "Bash(cat /srv/agent-worktrees/**)",
+      "Bash(cat /srv/pulse-code/**)",
+      "Bash(cat /srv/agent-context/**)",
+      "Bash(cat /srv/plans-multica/**)",
+      "Bash(date *)",
+      "Bash(echo *)",
+      "Bash(pg_isready *)",
+
+      "Grep(**)",
+      "Glob(**)"
+    ]
+  },
+
+  "notes": [
+    "Symlinked into each /home/multica/.claude/agent-N/settings.json by scripts/14-agent-host-prep.sh.",
+    "Each multica.ai agent (in the workspace) runs claude with custom_env=CLAUDE_CONFIG_DIR=/home/multica/.claude/agent-N/, so this settings.json applies per-agent.",
+    "Allows: read+write inside /srv/agent-worktrees/agent-N/, push to agent-*/feature/* branches, gh pr create.",
+    "Denies: push to main/master, force push, gh repo create/fork, deploy commands, prod admin DB access.",
+    "Defense in depth: P5 (no Forge access) + branch protection on receiving repo + Claude code review on PR + CI."
+  ]
+}
