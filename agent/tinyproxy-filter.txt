@@ -1,0 +1,27 @@
+# tinyproxy filter (FilterDefaultDeny=Yes → allowlist mode).
+# Only hosts matching one of these regexes can be reached from agent-host container.
+# See agent/tinyproxy.conf for the proxy config.
+
+# Anthropic API — required for claude CLI.
+^(.*\.)?api\.anthropic\.com$
+
+# GitHub — git push, gh pr create, gh api.
+^(.*\.)?github\.com$
+^api\.github\.com$
+^codeload\.github\.com$
+^objects\.githubusercontent\.com$
+^uploads\.github\.com$
+
+# Telegram — health-check alerts (OAuth expiry, sidecar health).
+^api\.telegram\.org$
+
+# Host gateway — Pulse PG/Redis (read-only role enforced server-side).
+^host\.docker\.internal$
+
+# Dev-PG sidecars on agent-net.
+^pg-agent-[0-9]+$
+
+# Tailscale tailnet (CH replica + any tailnet hosts the agent legitimately reaches).
+# Adjust the tailnet name when bootstrapping (passed via PULSE_CH_REPLICA_HOST env, but filter
+# is regex-based so we permit the tailnet domain wildcard).
+^.*\.tail38d0e3\.ts\.net$

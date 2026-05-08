@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "defaultMode": "default",
+
+    "deny": [
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(rsync *)",
+      "Bash(sftp *)",
+
+      "Bash(forge *)",
+      "Bash(gh ssh-key *)",
+      "Bash(gh repo create *)",
+      "Bash(gh repo delete *)",
+      "Bash(gh repo fork *)",
+      "Bash(gh secret *)",
+      "Bash(gh release *)",
+
+      "Bash(npm publish *)",
+      "Bash(yarn publish *)",
+      "Bash(bun publish *)",
+
+      "Bash(git push origin main*)",
+      "Bash(git push origin master*)",
+      "Bash(git push * main)",
+      "Bash(git push * master)",
+      "Bash(git push --force*)",
+      "Bash(git push -f *)",
+
+      "Bash(git remote add *)",
+      "Bash(git remote set-url *)",
+
+      "Bash(sudo *)",
+      "Bash(su -*)",
+      "Bash(chown *)",
+      "Bash(chmod 7*)",
+
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf $HOME*)",
+      "Bash(rm -rf ~*)",
+
+      "Bash(curl *api.openai.com*)",
+      "Bash(curl *api.telegram.org*)",
+      "Bash(wget *api.openai.com*)",
+
+      "Bash(psql *postgres://pulse_admin*)",
+      "Bash(psql -h * -U postgres*)",
+      "Bash(clickhouse * --user default*)",
+
+      "Read(/home/agent/.ssh/*)",
+      "Read(/home/agent/.gnupg/*)",
+      "Read(/home/agent/.git-credentials*)",
+      "Read(/etc/passwd)",
+      "Read(/etc/shadow)",
+      "Read(**/.env*)",
+      "Read(**/credentials*)",
+      "Read(**/.aws/*)",
+      "Read(**/.gh/*)",
+
+      "Read(/srv/pulse-bare.git/**)",
+      "Read(/srv/pulse-bare/**)"
+    ],
+
+    "allow": [
+      "Read(/home/agent/worktrees/**)",
+      "Edit(/home/agent/worktrees/**)",
+      "Write(/home/agent/worktrees/**)",
+
+      "Read(/srv/pulse-code/**)",
+      "Read(/srv/agent-context/**)",
+      "Read(/home/agent/.claude/skills/**)",
+      "Read(/etc/agent-settings.json)",
+
+      "Bash(git -C /home/agent/worktrees/* status*)",
+      "Bash(git -C /home/agent/worktrees/* log*)",
+      "Bash(git -C /home/agent/worktrees/* diff*)",
+      "Bash(git -C /home/agent/worktrees/* show*)",
+      "Bash(git -C /home/agent/worktrees/* fetch*)",
+      "Bash(git -C /home/agent/worktrees/* pull*)",
+      "Bash(git -C /home/agent/worktrees/* add *)",
+      "Bash(git -C /home/agent/worktrees/* commit *)",
+      "Bash(git -C /home/agent/worktrees/* push origin agent-*)",
+      "Bash(git -C /home/agent/worktrees/* push origin feature/*)",
+      "Bash(git -C /home/agent/worktrees/* push origin HEAD*)",
+      "Bash(git -C /home/agent/worktrees/* branch*)",
+      "Bash(git -C /home/agent/worktrees/* checkout*)",
+      "Bash(git -C /home/agent/worktrees/* stash*)",
+      "Bash(git -C /home/agent/worktrees/* worktree*)",
+
+      "Bash(gh pr create*)",
+      "Bash(gh pr view*)",
+      "Bash(gh pr list*)",
+      "Bash(gh pr edit*)",
+      "Bash(gh pr comment*)",
+      "Bash(gh pr diff*)",
+      "Bash(gh pr checks*)",
+      "Bash(gh issue view*)",
+      "Bash(gh issue list*)",
+      "Bash(gh issue comment*)",
+      "Bash(gh api repos/*/contents/**)",
+
+      "Bash(psql postgres://pulse_agent_ro*)",
+      "Bash(psql postgres://pulse:dev_only*)",
+      "Bash(psql -h pg-agent-* -U pulse*)",
+      "Bash(clickhouse client * --user agent_ro*)",
+      "Bash(clickhouse * --user agent_ro*)",
+
+      "Bash(php artisan migrate*)",
+      "Bash(php artisan migrate:fresh*)",
+      "Bash(php artisan migrate:rollback*)",
+      "Bash(php artisan db:seed*)",
+      "Bash(php artisan tinker --execute*)",
+      "Bash(composer install*)",
+      "Bash(composer update*)",
+      "Bash(php /home/agent/worktrees/**)",
+
+      "Bash(bun install*)",
+      "Bash(bun run *)",
+      "Bash(bun test*)",
+      "Bash(npm install*)",
+      "Bash(npm run *)",
+      "Bash(npm test*)",
+      "Bash(node /home/agent/worktrees/**)",
+
+      "Bash(yq *)",
+      "Bash(jq *)",
+      "Bash(grep *)",
+      "Bash(rg *)",
+      "Bash(find /home/agent/worktrees*)",
+      "Bash(find /srv/pulse-code*)",
+      "Bash(find /srv/agent-context*)",
+      "Bash(ls *)",
+      "Bash(cat /home/agent/worktrees/**)",
+      "Bash(cat /srv/pulse-code/**)",
+      "Bash(cat /srv/agent-context/**)",
+      "Bash(date *)",
+      "Bash(echo *)",
+      "Bash(pg_isready *)",
+
+      "Grep(**)",
+      "Glob(**)"
+    ]
+  },
+
+  "notes": [
+    "Bind-mounted read-only into agent-host container at /etc/agent-settings.json.",
+    "Each spawned claude process symlinks this to its own CLAUDE_CONFIG_DIR/settings.json.",
+    "Allows: read+write inside /home/agent/worktrees/, push to agent-*/feature/* branches, gh pr create, dev-PG migrations, prod read-only PG/CH queries.",
+    "Denies: push to main/master, force push, gh repo create/fork, deploy commands, prod admin DB access.",
+    "Defense in depth: P5 (no Forge access) + branch protection on receiving repo + Claude code review on PR + CI."
+  ]
+}
