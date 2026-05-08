@@ -116,6 +116,33 @@ mkdir -p "$WORKTREES_BASE"
 chown "$USERNAME":"$USERNAME" "$WORKTREES_BASE"
 chmod 750 "$WORKTREES_BASE"
 
+# ---- multica-daemon ReadWritePaths drop-in ----
+#
+# multica-daemon.service runs with ProtectSystem=strict, so the daemon and
+# every agent it spawns inherit a mount namespace where rootfs is ro and only
+# paths in ReadWritePaths= are bind-mounted rw. The base unit (09-multica-
+# daemon.sh) covers /home/multica /tmp /run, but the agent worktree paths
+# created above must be added explicitly — otherwise `git checkout -b`,
+# `git commit`, and `git worktree add` from inside the daemon ns fail with
+# EROFS even though root (host ns) can write to them.
+DAEMON_DROPIN_DIR=/etc/systemd/system/multica-daemon.service.d
+DAEMON_DROPIN="$DAEMON_DROPIN_DIR/agent-worktree-rw.conf"
+mkdir -p "$DAEMON_DROPIN_DIR"
+DAEMON_DROPIN_CONTENT="[Service]
+ReadWritePaths=$WORKTREES_BASE $PULSE_BARE
+"
+if [[ ! -f "$DAEMON_DROPIN" ]] || ! diff -q <(printf '%s' "$DAEMON_DROPIN_CONTENT") "$DAEMON_DROPIN" >/dev/null 2>&1; then
+    printf '%s' "$DAEMON_DROPIN_CONTENT" > "$DAEMON_DROPIN"
+    systemctl daemon-reload
+    if systemctl is-active --quiet multica-daemon.service; then
+        systemctl restart multica-daemon.service
+        log_ok "multica-daemon restarted to pick up new ReadWritePaths"
+    fi
+    log_ok "drop-in installed: $DAEMON_DROPIN"
+else
+    log_skip "$DAEMON_DROPIN already up to date"
+fi
+
 CLAUDE_BASE="$USER_HOME/.claude"
 mkdir -p "$CLAUDE_BASE"
 chown "$USERNAME":"$USERNAME" "$CLAUDE_BASE"
