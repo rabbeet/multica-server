@@ -110,6 +110,8 @@
       "Bash(psql postgres://pulse:*)",
       "Bash(psql $PULSE_PG_DSN*)",
       "Bash(psql $PULSE_PG_RW_DSN*)",
+      "Bash(psql postgres://vadim*ports.clickavia.su*)",
+      "Bash(psql $FDS_DB_DSN*)",
       "Bash(clickhouse client * --user agent_ro*)",
       "Bash(clickhouse * --user agent_ro*)",
       "Bash(clickhouse-client *qx3928je2m*)",
@@ -121,6 +123,8 @@
       "Bash(op read *)",
       "Bash(op item get *)",
       "Bash(op vault list*)",
+      "Bash(curl *forge.laravel.com/api/v1/*)",
+      "Bash(curl -* forge.laravel.com/api/v1/*)",
 
       "Bash(yq *)",
       "Bash(jq *)",
