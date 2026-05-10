@@ -112,6 +112,70 @@ fi
 
 log_ok "docker $(docker --version | awk '{print $3}' | tr -d ',') + compose $(docker compose version --short) present"
 
+# ---- PHP 8.4 + composer (for agent pre-PR static checks; matches CI) --------
+# The pre-pr-checks hook (agent/hooks/pre-pr-checks.sh) runs pint + npm scripts
+# inside agent worktrees before `gh pr create` to catch lint/format/types fails
+# locally. Without these, agents push PRs that immediately fail CI.
+PHP_VERSION="8.4"
+PHP_PKGS=(
+    "php${PHP_VERSION}-cli"
+    "php${PHP_VERSION}-mbstring"
+    "php${PHP_VERSION}-xml"
+    "php${PHP_VERSION}-curl"
+    "php${PHP_VERSION}-zip"
+    "php${PHP_VERSION}-bcmath"
+    "php${PHP_VERSION}-intl"
+    "php${PHP_VERSION}-sqlite3"
+    "php${PHP_VERSION}-gd"
+)
+
+if command -v php >/dev/null 2>&1 && php -v 2>/dev/null | grep -q "PHP ${PHP_VERSION}"; then
+    log_skip "PHP ${PHP_VERSION} already installed: $(php -v | head -1)"
+else
+    log_info "Installing PHP ${PHP_VERSION} from ondrej/php PPA..."
+    if ! grep -rq "ondrej/php" /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq software-properties-common
+        add-apt-repository -y ppa:ondrej/php
+        apt-get update -qq
+    fi
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${PHP_PKGS[@]}"
+    log_ok "PHP installed: $(php -v | head -1)"
+fi
+
+if command -v composer >/dev/null 2>&1; then
+    log_skip "composer already installed: $(composer --version | head -1)"
+else
+    log_info "Installing composer to /usr/local/bin..."
+    EXPECTED_HASH=$(curl -sSL https://composer.github.io/installer.sig)
+    php -r "copy('https://getcomposer.org/installer', '/tmp/composer-setup.php');"
+    ACTUAL_HASH=$(php -r "echo hash_file('sha384', '/tmp/composer-setup.php');")
+    if [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
+        log_error "composer installer checksum mismatch — aborting"
+        rm -f /tmp/composer-setup.php
+        exit 1
+    fi
+    php /tmp/composer-setup.php --quiet --install-dir=/usr/local/bin --filename=composer
+    rm -f /tmp/composer-setup.php
+    log_ok "composer installed: $(composer --version | head -1)"
+fi
+
+# ---- Node.js 20 LTS + npm (matches CI default runner Node) ------------------
+NODE_MAJOR=20
+if command -v node >/dev/null 2>&1 && node -v | grep -q "^v${NODE_MAJOR}\."; then
+    log_skip "Node ${NODE_MAJOR}.x already installed: $(node -v)"
+else
+    log_info "Installing Node.js ${NODE_MAJOR}.x from NodeSource..."
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        | gpg --dearmor --batch --yes -o /etc/apt/keyrings/nodesource.gpg
+    chmod a+r /etc/apt/keyrings/nodesource.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs
+    log_ok "Node installed: $(node -v), npm $(npm -v)"
+fi
+
 # ---- Verify host services we need to coexist with ----------------------------
 for svc in postgresql redis-server containerd; do
     if systemctl is-active "$svc" >/dev/null 2>&1; then
