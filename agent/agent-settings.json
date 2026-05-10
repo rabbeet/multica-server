@@ -148,11 +148,27 @@
     ]
   },
 
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/multica-infra/agent/hooks/pre-pr-checks.sh",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  },
+
   "notes": [
     "Symlinked into each /home/multica/.claude/agent-N/settings.json by scripts/14-agent-host-prep.sh.",
     "Each multica.ai agent (in the workspace) runs claude with custom_env=CLAUDE_CONFIG_DIR=/home/multica/.claude/agent-N/, so this settings.json applies per-agent.",
     "Allows: read+write inside /srv/agent-worktrees/agent-N/, push to agent-*/feature/* branches, gh pr create.",
     "Denies: push to main/master, force push, gh repo create/fork, deploy commands, prod admin DB access.",
-    "Defense in depth: P5 (no Forge access) + branch protection on receiving repo + Claude code review on PR + CI."
+    "Defense in depth: P5 (no Forge access) + branch protection on receiving repo + Claude code review on PR + CI.",
+    "PreToolUse hook pre-pr-checks.sh: gates `gh pr create` on pint+npm lint/format/types so trivial CI fails are caught locally. Bypass with SKIP_PR_CHECKS=1."
   ]
 }
