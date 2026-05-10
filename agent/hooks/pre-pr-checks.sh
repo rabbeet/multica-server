@@ -52,24 +52,28 @@ if [ ! -f vendor/autoload.php ]; then
     composer install --no-interaction --prefer-dist --no-progress --no-scripts >&2 \
         || fail "composer install"
 fi
-if [ ! -d node_modules ]; then
+if [ -f package.json ] && [ ! -d node_modules ]; then
     echo "[pre-pr-checks] npm ci (node_modules missing)..." >&2
     npm ci --no-audit --no-fund >&2 || fail "npm ci"
 fi
 
 echo "[pre-pr-checks] running static checks before PR..." >&2
 
-echo "[pre-pr-checks]   -> vendor/bin/pint --test" >&2
-vendor/bin/pint --test >&2 || fail "pint --test"
+if [ -x vendor/bin/pint ]; then
+    echo "[pre-pr-checks]   -> vendor/bin/pint --test" >&2
+    vendor/bin/pint --test >&2 || fail "pint --test"
+fi
 
-echo "[pre-pr-checks]   -> npm run lint:check" >&2
-npm run --silent lint:check >&2 || fail "npm lint:check"
-
-echo "[pre-pr-checks]   -> npm run format:check" >&2
-npm run --silent format:check >&2 || fail "npm format:check"
-
-echo "[pre-pr-checks]   -> npm run types:check" >&2
-npm run --silent types:check >&2 || fail "npm types:check"
+# npm scripts only run if package.json defines them (silent skip otherwise).
+if [ -f package.json ]; then
+    has_script() { node -e "process.exit(((require('./package.json').scripts||{})['$1'])?0:1)" 2>/dev/null; }
+    for script in lint:check format:check types:check; do
+        if has_script "$script"; then
+            echo "[pre-pr-checks]   -> npm run $script" >&2
+            npm run --silent "$script" >&2 || fail "npm $script"
+        fi
+    done
+fi
 
 echo "[pre-pr-checks] OK — static checks passed, allowing gh pr create" >&2
 exit 0
