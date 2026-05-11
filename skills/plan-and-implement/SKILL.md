@@ -22,6 +22,25 @@ echo "$CLAUDE_CONFIG_DIR" | sed 's|.*/agent-||'   # prints your agent number
 
 If you are running on the brainstorm host (read-only Pulse access, no worktree, no live PG) — use `/publish-plan` instead. This skill assumes full agent capabilities.
 
+## INVOCATION GATE — explicit user approval required
+
+NEVER invoke this skill on your own initiative. It writes to plans-repo AND pushes code to a feature branch, so it must be explicitly authorized by the user for each task.
+
+The skill is approved to run ONLY if ONE of these holds for the user message that **triggered the current task** (i.e. the trigger that spawned this agent session, not an earlier message in the issue history):
+
+1. The trigger literally contains `/plan-and-implement`.
+2. The trigger contains an unambiguous go-ahead for implementation: `"go"`, `"погнали"`, `"запускай"`, `"имплементируй"`, `"пиши код"`, `"ship it"`, `"шипи"`, or a paraphrase whose only reasonable reading is "start coding now".
+
+The following are NOT approval — do NOT invoke the skill after them:
+
+- Scope clarifications — numbered answers to your `/office-hours` questions, `"да"`, `"нет"`, `"оба варианта"`, `"canonical merged"`, etc.
+- Bare acknowledgements — `"ок"`, `"С"`, `"thanks"`, `"+"`.
+- A task whose trigger is empty or unrelated to implementation, even if a published plan for the issue already exists.
+
+If you finish `/office-hours` or scope clarifications and you believe you're ready to plan+implement: **STOP**. Draft the plan, publish it via `/publish-plan` (or post it for review via `/plan-ceo-review`), comment on the issue with «План опубликован — жду подтверждения для `/plan-and-implement`», and exit. The user will spawn a new task with the explicit go-ahead when ready.
+
+When in doubt: **do not invoke**. Ask in an issue comment instead.
+
 ## What it does — three phases
 
 ```
@@ -82,7 +101,7 @@ invoke /ship-pr
    - Test plan (which tests cover the change, which need to be added)
    - Migration plan (if DDL changes)
 
-5. After plan is committed and pushed, **proceed directly to Phase 2 in the same session**. Do NOT exit. There is no handoff in the agent flow.
+5. After plan is committed and pushed, proceed to Phase 2 in the same session — **but only if the Invocation Gate at the top of this skill was satisfied** (the trigger of this task explicitly authorized implementation). If you reached Phase 1 from `/office-hours` or scope clarifications, STOP after publishing the plan, comment on the issue with «План опубликован — жду подтверждения для `/plan-and-implement`», and exit.
 
 ## Phase 2 — Implement
 
