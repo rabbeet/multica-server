@@ -42,7 +42,12 @@ The host's `multica-server/.env` must have these before running
 # Fine-grained PATs (90-day expiry, contents:read+write):
 AGENT_PULSE_PAT=<PAT for the Pulse repo — push agent-*/feature/* branches>
 AGENT_PLANS_PAT=<PAT for the plans repo — push to main allowed (audit log)>
-AGENT_MULTICA_PAT=<optional PAT for multica fork repo>
+
+# Optional (PUL-94 — multi-repo bare provisioning, needed for daemon tasks
+# whose target_repo != Pulse). Each optional bare is skipped cleanly if its
+# PAT is not set.
+AGENT_MULTICA_PAT=<PAT for rabbeet/multica — bare at /srv/multica-bare.git>
+AGENT_AGENT_CONTEXT_PAT=<PAT for rabbeet/agent-context — bare at /srv/agent-context-bare.git>
 
 # Read-only PG role on host PG (only meaningful if Pulse dev/staging copy lives here):
 PULSE_AGENT_RO_PW=<openssl rand -hex 32>

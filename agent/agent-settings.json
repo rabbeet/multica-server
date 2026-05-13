@@ -58,7 +58,11 @@
       "Read(**/.gh/*)",
 
       "Read(/srv/pulse-bare.git/**)",
-      "Read(/srv/pulse-bare/**)"
+      "Read(/srv/pulse-bare/**)",
+      "Read(/srv/multica-bare.git/**)",
+      "Read(/srv/multica-bare/**)",
+      "Read(/srv/agent-context-bare.git/**)",
+      "Read(/srv/agent-context-bare/**)"
     ],
 
     "allow": [
