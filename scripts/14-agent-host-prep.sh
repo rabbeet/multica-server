@@ -50,6 +50,7 @@ if [[ -z "${AGENT_PULSE_PAT:-}" ]]; then
     log_info "         AGENT_PULSE_PAT=...          (required, for Pulse bare clone)"
     log_info "         AGENT_PLANS_PAT=...          (required, for plans repo access)"
     log_info "         AGENT_MULTICA_PAT=...        (optional, PUL-94 — for rabbeet/multica bare)"
+    log_info "         AGENT_MULTICA_SERVER_PAT=... (optional, PUL-94 — for rabbeet/multica-server bare)"
     log_info "         AGENT_AGENT_CONTEXT_PAT=...  (optional, PUL-94 — for rabbeet/agent-context bare)"
     log_info "         AGENT_COUNT=2                (optional, default 2)"
     log_info "    3. Re-run: sudo ./bootstrap.sh 14"
@@ -152,6 +153,13 @@ if [[ -n "${AGENT_MULTICA_PAT:-}" ]]; then
     provision_bare "multica" "rabbeet/multica" "$AGENT_MULTICA_PAT"
 else
     log_info "AGENT_MULTICA_PAT not set — skipping /srv/multica-bare.git (per-task tasks for rabbeet/multica will fail to spawn until provisioned)"
+fi
+
+# multica-server — optional (PUL-94, daemon target_repo=rabbeet/multica-server).
+if [[ -n "${AGENT_MULTICA_SERVER_PAT:-}" ]]; then
+    provision_bare "multica-server" "rabbeet/multica-server" "$AGENT_MULTICA_SERVER_PAT"
+else
+    log_info "AGENT_MULTICA_SERVER_PAT not set — skipping /srv/multica-server-bare.git (per-task tasks for rabbeet/multica-server will fail to spawn until provisioned)"
 fi
 
 # agent-context — optional (PUL-94, daemon target_repo=rabbeet/agent-context).
