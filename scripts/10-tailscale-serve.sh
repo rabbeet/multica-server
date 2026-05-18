@@ -30,26 +30,43 @@ if ! tailscale status --json 2>/dev/null | jq -e '.BackendState == "Running"' >/
 fi
 
 # ---- PUL-166: enforce no-Funnel invariant on every run ----
-# `tailscale funnel ... off` is idempotent — no-op if Funnel was
-# already off. We hit the documented ports (:8443 is what PUL-166
-# was using; :443 is included for belt-and-braces if a future
-# config ever published frontend on Funnel). Errors are tolerated
-# because older tailscaled versions return non-zero when the port
-# was already off; the post-run check below is the source of truth.
+# `tailscale funnel reset` clears all funnel routes for this node.
+# Idempotent: when no funnels are configured, the command is a
+# no-op. Reset rather than per-port `... off` because the CLI
+# shape changed in tailscale 1.94 — `funnel <port> off` is no
+# longer valid (the new shape is `tailscale funnel <target>` for
+# enable; `reset` for disable-everything).
 log_info "Enforcing PUL-166 invariant: Funnel must be off..."
-tailscale funnel --bg=false 8443 off 2>/dev/null || true
-tailscale funnel --bg=false 443 off 2>/dev/null || true
-if tailscale serve status 2>/dev/null | grep -qi "Funnel on"; then
-    log_error "Funnel still on after explicit off — manual intervention required."
-    log_error "Run: tailscale funnel reset; tailscale serve status"
+tailscale funnel reset 2>&1 || {
+    log_error "tailscale funnel reset failed — see error above."
+    log_error "Manual check: tailscale serve status --json | jq .AllowFunnel"
+    exit 1
+}
+
+# Post-check via JSON, not text grep. Text output contains a
+# literal `# Funnel on:` comment header even when Funnel is off
+# (in some tailscaled versions), which makes `grep "Funnel on"`
+# a false-positive landmine. AllowFunnel is the source of truth.
+if tailscale serve status --json 2>/dev/null \
+    | jq -e '(.AllowFunnel // {}) | to_entries | length > 0' >/dev/null; then
+    log_error "Funnel still configured after reset — manual intervention required."
+    log_error "Inspect: tailscale serve status --json | jq .AllowFunnel"
     log_error "See docs/PUL-166-CUTOVER.md for the canonical cutover sequence."
     exit 1
 fi
 
 # ---- Idempotent: check current serve config ----
+# Build the FQDN key from the runtime config so jq sees the actual
+# string. Earlier versions of this check used '${TAILSCALE_HOSTNAME:-multica}'
+# inside single-quoted jq, which left the literal placeholder in the
+# expression — guaranteed false. The key in `tailscale serve status
+# --json` is the FQDN ("multica.tail38d0e3.ts.net:443"), not the
+# bare hostname.
+ts_fqdn="$(tailscale status --json | jq -r '.Self.DNSName | sub("\\.$"; "")' 2>/dev/null || echo '')"
 current=$(tailscale serve status --json 2>/dev/null || echo '{}')
-if echo "$current" | jq -e '.Web."${TAILSCALE_HOSTNAME:-multica}:443"' >/dev/null 2>&1; then
-    log_skip "tailscale serve already configured for HTTPS:443"
+if [[ -n "$ts_fqdn" ]] && echo "$current" | \
+    jq -e --arg key "${ts_fqdn}:443" '.Web[$key]' >/dev/null 2>&1; then
+    log_skip "tailscale serve already configured for HTTPS:443 on $ts_fqdn"
     tailscale serve status
     exit 0
 fi

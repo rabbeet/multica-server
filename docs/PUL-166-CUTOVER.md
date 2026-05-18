@@ -9,6 +9,12 @@ Run this sequence end-to-end. Each step has a verification — if the verify
 fails, stop and roll back (rollback at the bottom). Total time: ~30 minutes
 including the 5-minute drain.
 
+> ⚠️ **Do not skip steps and do not reorder them.** Step 2 (turn webhook OFF)
+> is only safe to run *after* step 1's G2 verify succeeds. Skipping step 1
+> means there is no live poll-channel during the webhook-off → Funnel-off
+> window, so events arriving in that window simply vanish. If unsure, stop
+> and re-read.
+
 ---
 
 ## 0. Pre-flight
@@ -67,27 +73,50 @@ docker exec multica-postgres-1 psql -U multica -d multica -c \
 
 **G2 gate (24 hours observation):**
 
+Compare poll-channel counts against webhook-channel counts. They should match
+±5% — both ingress channels see the same upstream events from GitHub.
+
+**Important:** the channels CAN'T be disambiguated at the `cascade_retrigger`
+row level by event_id prefix. UUIDv5 mixes the namespace into a SHA1 — the
+namespace UUID does NOT survive as a hex prefix in the resulting id. Use the
+two channels' own emit-side counters instead.
+
 ```bash
-# Compare poll-channel classified events against webhook-channel for the same
-# period. They should match ±5% (both ingress channels see the same upstream
-# events; namespaces differ but counts should align).
-# Via Prometheus /metrics if scraping is set up:
-#   sum(rate(multica_github_poll_events_total{event_type=~"ci_failure|pr_merged|pr_review_change|pr_title_edit"}[24h])) by (event_type)
-# Or directly against the DB rows:
+# Poll-channel: read the Prometheus counter the poller increments per event.
+# (Requires METRICS_LISTEN_ADDR set on the backend so /metrics is reachable.)
+curl -sS http://localhost:9100/metrics | grep '^multica_github_poll_events_total'
+# Expected lines, one per (repo, event_type) seen in the last 24h:
+#   multica_github_poll_events_total{event_type="ci_failure",repo="rabbeet/Pulse"} 17
+#   multica_github_poll_events_total{event_type="pr_merged",repo="rabbeet/Pulse"} 4
+#   ...
+# Also confirm the poller hasn't been silently stuck:
+curl -sS http://localhost:9100/metrics | grep '^multica_github_poll_cursor_age_seconds'
+# All values must be < 2 * MULTICA_GITHUB_POLL_INTERVAL_SEC (default 60s).
+
+# Webhook-channel: tail the backend log for completed deliveries the inbound
+# adapter handled in the same window. The adapter logs at info on every accepted
+# event, and the cascade_retrigger row insert is observable via
+# webhooks.signature_failed / webhooks.adapter_unsupported / cascade_retrigger
+# row count for events fired in the window.
+docker logs --since=24h multica-backend-1 2>&1 \
+    | grep -E 'webhooks\.github\.normalize_ok|webhooks\.signature_failed' \
+    | awk '/normalize_ok/ {ok++} /signature_failed/ {fail++} END {print "ok=" ok " sig_failed=" fail}'
+
+# Alternatively, count cascade_retrigger rows in the window (this includes
+# BOTH channels — useful for sanity, but does NOT discriminate):
 docker exec multica-postgres-1 psql -U multica -d multica -c \
-    "SELECT event_type, count(*) FILTER (WHERE event_id::text LIKE '9e2d4f1c-%') AS poll,
-                                  count(*) FILTER (WHERE event_id::text NOT LIKE '9e2d4f1c-%') AS webhook
+    "SELECT event_type, count(*)
      FROM cascade_retrigger
      WHERE fired_at > now() - interval '24 hours'
      GROUP BY event_type
      ORDER BY event_type;"
-# (9e2d4f1c is the poll-namespace UUIDv5 prefix — distinct from the webhook
-# namespace a3b6f8e2.)
 ```
 
-If poll/webhook counts diverge by more than 5%, do NOT proceed to step 2.
-Investigate the discrepancy first (likely classifier gap or rate-limit
-throttling).
+If the poll-channel `events_total` rate is more than 5% off the webhook log
+event counts for the same window, do NOT proceed to step 2. Investigate the
+discrepancy first (most likely candidates: classifier gap on a new GitHub
+event variant, rate-limit throttling, or events older than what `/events`
+keeps as history).
 
 ## 2. Cut the webhook channel off
 
@@ -117,9 +146,11 @@ curl -sS -o /dev/null -w '%{http_code}\n' -X POST \
 docker logs -f multica-backend-1 2>&1 | grep -E "githubpoll|webhooks"
 ```
 
-Wait 5 minutes after the flag flip so GitHub's webhook retry queue drains. The
-webhook delivery side will see 404s for that window — that's the signal to
-GitHub that this endpoint is gone.
+Wait 5 minutes after the flag flip. GitHub does NOT retry 404 responses
+(retries fire only on 5xx, over ~8h with backoff), so a 404 wall is final
+from GitHub's perspective — no straggler-retries to drain. The 5-minute
+wait is for in-flight POSTs that GitHub had already queued before the flip
+to land and resolve cleanly.
 
 ## 3. Remove the Tailscale Funnel
 
@@ -145,12 +176,19 @@ Funnel publishes hostnames in Tailscale's public DNS zone with TTL 300s. After
 Funnel-off, the record disappears at the next TTL expiry.
 
 ```bash
-# Should immediately go to NXDOMAIN inside the tailnet (MagicDNS only):
+# Inside the tailnet, MagicDNS keeps resolving `multica.tail38d0e3.ts.net`
+# to the host's 100.x tailnet IP — that's by design and unaffected by
+# Funnel-off. This is NOT the test that matters; it's a sanity check
+# that the tailnet hostname still works for tailnet-connected devices.
 dig multica.tail38d0e3.ts.net @100.100.100.100
+# Expect: AN answer with a 100.x address.
 
-# From public resolver — wait up to 5 minutes for TTL expiry, then:
+# The actual test: from a PUBLIC resolver the hostname must go away.
+# Wait up to 5 minutes for the public-DNS TTL to expire (60–300s
+# depending on Tailscale's edge), then:
 dig multica.tail38d0e3.ts.net @8.8.8.8
-# Expect: empty answer / NXDOMAIN.
+# Expect: empty answer / NXDOMAIN. THIS is the signal that the
+# PUL-160 root cause (public DNS leak) is fixed.
 ```
 
 ## 5. Revoke the GitHub webhooks
@@ -232,24 +270,72 @@ If Safari shows `ERR_SSL_PROTOCOL_ERROR` or `ERR_NAME_NOT_RESOLVED`, check:
 
 ## Rollback
 
-If anything in steps 1-5 misbehaves, restore the webhook channel:
+If anything in steps 1-5 misbehaves, restore the webhook channel.
+
+### Rollback step 1 — re-enable receiver
 
 ```bash
-# 1. Set MULTICA_CASCADE_WEBHOOK_ENABLED=true (and optionally
-#    MULTICA_GITHUB_POLL_ENABLED=false to avoid duplicates), restart backend.
-# 2. Re-enable Funnel:
-sudo tailscale funnel --bg 8443 / http://localhost:8080
-# Then restrict path with `tailscale serve` (the old config —
-# /webhooks/github only).
-# 3. Re-create the webhooks in GitHub UI for each of the four repos with
-#    URL https://multica.tail38d0e3.ts.net:8443/webhooks/github and
-#    the same HMAC secret as before (MULTICA_GITHUB_WEBHOOK_SECRET_CURRENT).
-# 4. Wait 5 minutes, confirm new events flow to cascade_retrigger via the
-#    webhook namespace UUIDs.
+# /opt/multica-server/.env: set
+MULTICA_CASCADE_WEBHOOK_ENABLED=true
+# (Optionally MULTICA_GITHUB_POLL_ENABLED=false if you want to silence
+# poll-channel writes during the rollback investigation.)
+
+docker compose -f /home/multica/multica/docker-compose.selfhost.yml \
+    --env-file /opt/multica-server/.env \
+    up -d --force-recreate backend
+
+curl -sS -X POST http://localhost:8080/webhooks/github \
+    -H "X-GitHub-Event: ping" -o /dev/null -w '%{http_code}\n'
+# Expect 401 (signature missing — proves the route is alive again).
 ```
 
-Time to roll back: ~10 minutes if all four webhook re-creations happen in
-parallel.
+### Rollback step 2 — re-enable Funnel
+
+```bash
+sudo tailscale funnel --bg 8443 http://localhost:8080
+tailscale serve status --json | jq .AllowFunnel
+# Should now show the :8443 funnel route.
+```
+
+### Rollback step 3 — re-create the deletion target
+
+**This is the step where pick the right path matters** — there are two
+possible sources of the live webhook deliveries, the rollback for each is
+different. Pick based on which step 5 path was used:
+
+- **3a (App-installation webhook — the path used by the multica-cascade-rabbeet
+  App):** re-open the App settings at
+  `https://github.com/organizations/<org>/settings/apps/multica-cascade-rabbeet/advanced`
+  and re-enter the previous **Webhook URL**
+  (`https://multica.tail38d0e3.ts.net:8443/webhooks/github`) + flip the Active
+  toggle back on. The HMAC secret stays the same on the App side; no rotation
+  needed. New deliveries start arriving within 1 minute.
+
+- **3b (classic per-repo webhooks — only if step 5a actually deleted any):**
+  re-create webhooks in each of the four watched repos via the GitHub repo
+  Settings → Webhooks UI, with URL
+  `https://multica.tail38d0e3.ts.net:8443/webhooks/github` + the HMAC secret
+  matching `MULTICA_GITHUB_WEBHOOK_SECRET_CURRENT`. As of 2026-05-18 step 5a
+  deletes nothing — skip 3b unless you confirmed step 5a's dry-run showed
+  matches.
+
+### Rollback step 4 — verify
+
+Wait 5 minutes, then confirm new events flow to `cascade_retrigger`:
+
+```bash
+docker exec multica-postgres-1 psql -U multica -d multica -c \
+    "SELECT event_type, count(*)
+     FROM cascade_retrigger
+     WHERE fired_at > now() - interval '5 minutes'
+     GROUP BY event_type ORDER BY event_type;"
+```
+
+If counts are zero AND your test PR produced no row, deliveries are still
+broken — check the App settings page (3a) for **Recent Deliveries** errors.
+
+Time to roll back: ~10 minutes for App-webhook path; longer for classic-webhook
+path because each repo's UI takes ~1 minute.
 
 ## Post-merge cleanup (PR5, separate)
 
