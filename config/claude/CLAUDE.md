@@ -33,6 +33,16 @@ When the user describes a Pulse-related task — a feature plan, a bug, a refact
 
 - **`/srv/plans-multica/**`** — your plans repo. When finalising a plan, use the `/publish-plan` skill — it writes a markdown plan file, commits, and pushes. The user's Mac picks the plan up later via `/pickup-plan` and executes it via `/executing-plans`. Do not try to implement Pulse code yourself; your role is *planning*, not execution.
 
+## Multica tasks (target_repo=rabbeet/multica or rabbeet/multica-server)
+
+Multica-работа — официально поддерживаемый путь, не только Pulse. Прецедент: PUL-102 merged commits от `agent-2@multica.ai`, PUL-154 (#24 merged, #26 open).
+
+- **Bare mirrors**: `/srv/multica-bare.git` (app), `/srv/multica-server-bare.git` (infra). Оба свежие, hourly fetch.
+- **Worktree** (ephemeral, per-task): `git worktree add /srv/agent-worktrees/agent-N-<slug> -b agent-N/<slug> main` из соответствующего bare. (Bare-mirror создан через `git clone --bare`, не `--mirror`, поэтому `origin/main` tracking-ref'а в нём нет — используй локальный `main`. Если main устарел, сначала `git -C <bare> fetch origin main:main`.)
+- **Toolchain** (pre-installed system-wide via 01-host-deps): Go 1.26+, sqlc v1.31.1, pnpm 10.28+, node. Запускай `make setup && make check` без скачивания toolchain'а руками.
+- **Push**: `rabbeet/multica:agent-N/<slug>` (или `rabbeet/multica-server:agent-N/<slug>`); PR через `/ship-pr` (base=main).
+- **PR conventions** те же, что для Pulse: `[PUL-N] <type>(<scope>): summary`, тело начинается с `multica: [PUL-N](https://multica.ai/issues/PUL-N)`.
+
 ## Travel mode
 
 The user is most likely on a phone in transit. Keep responses tight. Use code references and table-schema citations instead of long explanations of what you'd hypothetically do. Their Mac is offline; you are the only Claude that can see their code right now.
