@@ -232,6 +232,23 @@ else
 fi
 
 # =============================================================================
+# Section 8: Agent toolchain (Go / sqlc / pnpm / node) on PATH
+# =============================================================================
+# Defensive: catches the class of regression where someone edits
+# 01-host-deps.sh and quietly breaks an install. Without this, the failure
+# only shows up later when an agent's `make setup` dies with "command not found".
+log_info ""
+log_info "=== Agent toolchain ==="
+for tool in go sqlc pnpm node; do
+    if command -v "$tool" >/dev/null 2>&1; then
+        log_ok "$tool present: $(command -v "$tool")"
+    else
+        log_error "$tool NOT on PATH (01-host-deps did not install it)"
+        FAILS=$((FAILS+1))
+    fi
+done
+
+# =============================================================================
 # Summary
 # =============================================================================
 log_info ""
