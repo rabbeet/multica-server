@@ -89,9 +89,22 @@ install_go() {
     local tmp
     tmp=$(mktemp -d)
     trap "rm -rf '$tmp'" RETURN
-    curl -sSL "https://go.dev/dl/go${GO_VERSION}.linux-${go_arch}.tar.gz" -o "$tmp/go.tgz"
-    rm -rf "$go_dir"
-    tar -C /usr/local -xzf "$tmp/go.tgz"
+    # `-f` makes curl exit non-zero on HTTP 4xx/5xx instead of silently
+    # writing an HTML error body into go.tgz (which would then explode in
+    # tar with a cryptic gzip error).
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${go_arch}.tar.gz" -o "$tmp/go.tgz"
+    # Atomic install: extract to a staging dir on the same filesystem as
+    # $go_dir, then `mv` swap. If tar fails mid-extract, the live Go
+    # tree at $go_dir is untouched and any concurrent `make setup` in an
+    # agent worktree keeps working.
+    local stage
+    stage=$(mktemp -d -p /usr/local .go-staging-XXXXXX)
+    tar -C "$stage" -xzf "$tmp/go.tgz"
+    "$stage/go/bin/go" version >/dev/null
+    rm -rf "${go_dir}.old"
+    [[ -d "$go_dir" ]] && mv "$go_dir" "${go_dir}.old"
+    mv "$stage/go" "$go_dir"
+    rm -rf "$stage" "${go_dir}.old"
     ln -sf "$go_dir/bin/go" /usr/local/bin/go
     ln -sf "$go_dir/bin/gofmt" /usr/local/bin/gofmt
     log_ok "Installed: $($go_dir/bin/go version)"
@@ -121,8 +134,10 @@ install_sqlc() {
     local tmp
     tmp=$(mktemp -d)
     trap "rm -rf '$tmp'" RETURN
-    curl -sSL "https://github.com/sqlc-dev/sqlc/releases/download/v${SQLC_VERSION}/sqlc_${SQLC_VERSION}_linux_${sqlc_arch}.tar.gz" -o "$tmp/sqlc.tgz"
+    curl -fsSL "https://github.com/sqlc-dev/sqlc/releases/download/v${SQLC_VERSION}/sqlc_${SQLC_VERSION}_linux_${sqlc_arch}.tar.gz" -o "$tmp/sqlc.tgz"
     tar -C "$tmp" -xzf "$tmp/sqlc.tgz"
+    # `install -m 0755` is atomic (open+chmod+rename), so no staging dir
+    # needed here — sqlc is a single binary, unlike Go's full tree.
     install -m 0755 "$tmp/sqlc" "$sqlc_bin"
     log_ok "Installed: $($sqlc_bin version)"
 }
@@ -238,6 +253,25 @@ else
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs
     log_ok "Node installed: $(node -v), npm $(npm -v)"
 fi
+
+# ---- pnpm (system-wide via npm -g, NOT corepack) ----------------------------
+# Required by `make setup` in rabbeet/multica (Vue/React frontend). Installed
+# via `npm install -g` so the binary lives in /usr/bin (system-wide) instead
+# of corepack's per-user cache under ~/.cache/node/corepack — the daemon
+# spawns agents under whichever user, and per-user shims would defer the
+# download to first-invocation and could miss between agent users.
+PNPM_VERSION="10.28.2"
+
+install_pnpm() {
+    if command -v pnpm >/dev/null 2>&1 && [[ "$(pnpm --version 2>/dev/null)" == "$PNPM_VERSION" ]]; then
+        log_skip "pnpm ${PNPM_VERSION} already installed: $(command -v pnpm)"
+        return 0
+    fi
+    log_info "Installing pnpm ${PNPM_VERSION} via npm -g..."
+    npm install -g --silent "pnpm@${PNPM_VERSION}"
+    log_ok "Installed: $(command -v pnpm) ($(pnpm --version))"
+}
+install_pnpm
 
 # ---- Verify host services we need to coexist with ----------------------------
 for svc in postgresql redis-server containerd; do
