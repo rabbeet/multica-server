@@ -6,6 +6,15 @@
 # multica's plain http://localhost:3000 stays local-only.
 #
 # This replaces the Caddy reverse proxy from the original design.
+#
+# PUL-166 invariant (added in PR4 of the polling cutover): NO Funnel.
+# Tailscale Funnel publishes the host's tailnet hostname in PUBLIC DNS,
+# which breaks iCloud Private Relay on iPhone Safari (PUL-160 root
+# cause). The webhook ingress that used Funnel has been replaced by
+# outbound polling (server/internal/githubpoll in rabbeet/multica).
+# This script now explicitly tears any Funnel route down on every
+# re-run so an operator that flipped Funnel back on by mistake gets
+# it cleared at next deploy.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,6 +26,23 @@ require_env
 # ---- Sanity ----
 if ! tailscale status --json 2>/dev/null | jq -e '.BackendState == "Running"' >/dev/null; then
     log_error "Tailscale not in Running state — run 03-tailscale-up.sh first"
+    exit 1
+fi
+
+# ---- PUL-166: enforce no-Funnel invariant on every run ----
+# `tailscale funnel ... off` is idempotent — no-op if Funnel was
+# already off. We hit the documented ports (:8443 is what PUL-166
+# was using; :443 is included for belt-and-braces if a future
+# config ever published frontend on Funnel). Errors are tolerated
+# because older tailscaled versions return non-zero when the port
+# was already off; the post-run check below is the source of truth.
+log_info "Enforcing PUL-166 invariant: Funnel must be off..."
+tailscale funnel --bg=false 8443 off 2>/dev/null || true
+tailscale funnel --bg=false 443 off 2>/dev/null || true
+if tailscale serve status 2>/dev/null | grep -qi "Funnel on"; then
+    log_error "Funnel still on after explicit off — manual intervention required."
+    log_error "Run: tailscale funnel reset; tailscale serve status"
+    log_error "See docs/PUL-166-CUTOVER.md for the canonical cutover sequence."
     exit 1
 fi
 
