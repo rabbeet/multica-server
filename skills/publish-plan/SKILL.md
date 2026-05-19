@@ -125,11 +125,49 @@ GitHub: rabbeet/plans main updated
    fi
    ```
 
-10. **Tell user:**
+10. **Optional cascade enroll (PUL-198 Part 2):** if the design doc's
+    frontmatter contains a multica issue identifier or UUID — typically
+    `multica_issue: PUL-N`, `multica_issue_id: <uuid>`, or both — the
+    skill MAY enroll that issue's cascade against the freshly-published
+    plan URL. This is what stops single-PR-style spawn skipping on a
+    multi-PR cascade: after enroll, the next `pr_merged` event on that
+    issue passes the worker's spawn gate.
+
+    Read the frontmatter:
+    ```bash
+    ISSUE_ID=$(yq -r '.multica_issue_id // .multica_issue // empty' "$PLAN_FILE")
+    ```
+    If `$ISSUE_ID` is empty → silently skip (architecture / no-ticket plans
+    have no issue to enroll).
+
+    Otherwise ask the user via **AskUserQuestion** (default N — this
+    is a behaviour-changing action on the issue):
+
+    > Enroll issue `${ISSUE_ID}` in cascade against this plan? Setting
+    > `cascade_plan_url=https://github.com/rabbeet/plans/blob/main/${PROJECT}/${PLAN_ID}.md`
+    > makes the cascade worker wake the assigned agent on each future
+    > `pr_merged` for this issue.
+    >   - **N** (default) — skip. Plan is published; issue's cascade
+    >     behaviour is unchanged.
+    >   - **Y** — call `multica issue update --cascade-plan-url <url>`
+    >     and report the result in the final summary.
+
+    On Y, run:
+    ```bash
+    PLAN_URL="https://github.com/rabbeet/plans/blob/main/${PROJECT}/${PLAN_ID}.md"
+    multica issue update "${ISSUE_ID}" --cascade-plan-url "${PLAN_URL}" --output json \
+        | jq -r '.cascade_plan_url' > /tmp/enroll.out 2>&1
+    ```
+    Surface success in the final summary; on failure (exit non-zero or
+    empty cascade_plan_url) report the error but do NOT roll back the
+    plan push — the plan is still useful even if enroll failed.
+
+11. **Tell user:**
     ```
     ✓ Published: ${PROJECT}/${PLAN_ID}
     File:       $PLAN_FILE
     Status:     ready
+    Cascade:    enrolled (cascade_plan_url=<URL>)   ← only if step 10 enrolled
     Pickup:     run /pickup-plan in your ~/coding/<project> worktree on Mac
     ```
 
@@ -141,6 +179,8 @@ GitHub: rabbeet/plans main updated
 - Network down on push → retry once with rebase, save locally if both fail with explicit recovery cmd.
 - Plan ID collision (someone else just published the same slug) → append `-2`, `-3` and retry.
 - yq not installed → fail loud with install instructions; do NOT fall back to sed (which would corrupt YAML).
+- Cascade enroll (step 10) — issue lookup fails or returns non-zero → surface the error but never block the plan push; the plan is already useful as a published artifact. The user can rerun `multica issue update --cascade-plan-url <url>` manually.
+- Cascade enroll on an issue that was already enrolled → `multica issue update` simply overwrites cascade_plan_url; no special handling.
 
 ## What it does NOT do
 
