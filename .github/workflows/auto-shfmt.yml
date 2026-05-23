@@ -10,11 +10,11 @@ name: auto-shfmt
 #     + multica — shared PAT identity until PUL-236 unifies).
 #
 # Auto-fix shfmt drift on agent-* PRs. Runs `shfmt -w` on scripts/+agent/,
-# commits as `[autofix] shfmt`, pushes via AGENT_PULSE_PAT to retrigger CI.
+# commits as `[autofix] shfmt`, pushes via GH_AUTOFIX_TOKEN to retrigger CI.
 #
 # Scope: agent-* branches only.
 # Loop guard: skip if HEAD authored by pulse-autofix-bot.
-# Required secret: AGENT_PULSE_PAT (Contents:write on rabbeet/multica-server).
+# Required secret: GH_AUTOFIX_TOKEN (Contents:write on rabbeet/multica-server).
 
 on:
   pull_request:
@@ -37,10 +37,10 @@ jobs:
       - name: PAT presence check
         id: pat_check
         env:
-          PAT: ${{ secrets.AGENT_PULSE_PAT }}
+          PAT: ${{ secrets.GH_AUTOFIX_TOKEN }}
         run: |
           if [ -z "$PAT" ]; then
-              echo "::warning::AGENT_PULSE_PAT not configured — auto-shfmt skipped"
+              echo "::warning::GH_AUTOFIX_TOKEN not configured — auto-shfmt skipped"
               echo "skip=true" >> "$GITHUB_OUTPUT"
           else
               echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -70,7 +70,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           repository: ${{ github.event.pull_request.head.repo.full_name }}
-          token: ${{ secrets.AGENT_PULSE_PAT }}
+          token: ${{ secrets.GH_AUTOFIX_TOKEN }}
           fetch-depth: 0
 
       - name: Install shfmt
