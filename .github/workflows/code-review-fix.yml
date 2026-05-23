@@ -87,8 +87,8 @@ jobs:
         if: steps.round.outputs.skip != 'true'
         run: |
           set -euo pipefail
-          # shellcheck is pre-installed; shfmt + yamllint install on demand
-          # (same as ci.yml from S1).
+          # Lint tooling: shellcheck is pre-installed on ubuntu-latest;
+          # shfmt + yamllint install on demand (same as ci.yml from S1).
           if ! command -v shfmt >/dev/null 2>&1; then
             sudo apt-get update -qq
             sudo apt-get install -y shfmt
