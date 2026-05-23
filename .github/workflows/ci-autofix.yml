@@ -231,7 +231,9 @@ jobs:
           OPEN_BRANCHES=$(gh pr list --repo "$GH_REPO" --state open --json headRefName --jq '.[].headRefName' 2>/dev/null || true)
           for BRANCH in $(git branch -r | grep 'origin/ci-autofix' | sed 's|origin/||'); do
             if ! echo "$OPEN_BRANCHES" | grep -q "^${BRANCH}$"; then
-              git push origin --delete "$BRANCH" 2>/dev/null && echo "Deleted branch: $BRANCH" || true
+              if git push origin --delete "$BRANCH" 2>/dev/null; then
+                echo "Deleted branch: $BRANCH"
+              fi
             fi
           done
 
@@ -245,10 +247,12 @@ jobs:
             FIX=$(sed -n '3p' /tmp/debug-report.txt)
             FILES=$(sed -n '4p' /tmp/debug-report.txt)
           fi
-          echo "symptom=${SYMPTOM:-N/A}" >> "$GITHUB_OUTPUT"
-          echo "root=${ROOT:-N/A}" >> "$GITHUB_OUTPUT"
-          echo "fix=${FIX:-N/A}" >> "$GITHUB_OUTPUT"
-          echo "files=${FILES:-N/A}" >> "$GITHUB_OUTPUT"
+          {
+            echo "symptom=${SYMPTOM:-N/A}"
+            echo "root=${ROOT:-N/A}"
+            echo "fix=${FIX:-N/A}"
+            echo "files=${FILES:-N/A}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Notify Telegram — PR ready
         if: success() && steps.guard.outputs.skip != 'true' && steps.pr.outputs.url != ''
