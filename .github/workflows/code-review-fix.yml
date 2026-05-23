@@ -1,0 +1,251 @@
+name: Claude Review Fix
+
+# Ported from rabbeet/multica (M2 @ 15d5d506) for the multica-server side of
+# PUL-235 (S2, 2026-05-23). Deltas vs multica M2:
+#   - Setup steps: setup-go@v5 + pnpm + setup-node@v6 → just `apt-get install
+#     shellcheck shfmt yamllint` + actionlint download. No Go, no pnpm, no
+#     Node — multica-server has no app code.
+#   - Install Dependencies step: `pnpm install --frozen-lockfile + go mod
+#     download` → no-op (no app deps to fetch).
+#   - Validate step in prompt: `go test + gofmt + pnpm turbo` → `shellcheck
+#     + shfmt -w + actionlint`. NO test runner (no app tests).
+#   - claude_args allowedTools: `Bash(go:*),Bash(gofmt:*),Bash(pnpm:*)` →
+#     `Bash(shellcheck:*),Bash(shfmt:*),Bash(bash:*)`.
+#   - Rules: "Do NOT edit sqlc-generated files" → "Do NOT mass-format the
+#     codebase in a fix PR" (tech-debt cleanup is a separate PR per S1
+#     docs/CI.md).
+#   - PR-title shell-injection hardening from M2 applied (env: pass).
+
+on:
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: claude-fix-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  fix-review:
+    if: |
+      github.event.label.name == 'claude-fix-needed' &&
+      !contains(github.event.pull_request.labels.*.name, 'needs-human-review') &&
+      !contains(github.event.pull_request.labels.*.name, 'claude-approved') &&
+      !contains(github.event.pull_request.labels.*.name, 'ci-autofix') &&
+      !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+
+    steps:
+      - name: Determine fix round
+        id: round
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ROUND=$(gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json labels --jq '[.labels[].name | select(startswith("fix-round-"))] | length')
+          echo "round=$ROUND" >> "$GITHUB_OUTPUT"
+          echo "Fix round: $ROUND"
+
+          if [ "$ROUND" -ge 3 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping — exceeded max rounds"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notify Telegram — fix started
+        if: steps.round.outputs.skip != 'true'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ROUND: ${{ steps.round.outputs.round }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode=HTML \
+            --data-urlencode "text=🔧 <b>Claude Review Fix (multica-server)</b> взял PR в работу (round ${ROUND}/3)
+
+          PR: <a href=\"${PR_URL}\">#${PR_NUMBER} ${PR_TITLE}</a>"
+
+      - name: Checkout PR branch
+        if: steps.round.outputs.skip != 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.AGENT_PULSE_PAT }}
+
+      - name: Install shell tooling
+        if: steps.round.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          # Lint tooling: shellcheck is pre-installed on ubuntu-latest;
+          # shfmt + yamllint install on demand (same as ci.yml from S1).
+          if ! command -v shfmt >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y shfmt
+          fi
+          if ! command -v yamllint >/dev/null 2>&1; then
+            python3 -m pip install --user yamllint
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
+          # actionlint upstream
+          cd /tmp
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.7
+          sudo mv /tmp/actionlint /usr/local/bin/actionlint
+
+      - name: Configure git
+        if: steps.round.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Claude Fix Review Comments
+        if: steps.round.outputs.skip != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: "claude"
+          additional_permissions: |
+            actions: read
+          prompt: |
+            You are fixing code review comments on PR #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+            This is fix round ${{ steps.round.outputs.round }} of 3.
+
+            This is **multica-server** — shell-only infra repo. No Go, no Next.js.
+
+            ## Step 1: Understand context
+
+            1. Read `config/claude/CLAUDE.md` for project conventions.
+            2. Read the PR description for business context:
+               ```bash
+               gh pr view ${{ github.event.pull_request.number }} --json body --jq '.body'
+               ```
+            3. Get the current PR diff:
+               ```bash
+               gh pr diff ${{ github.event.pull_request.number }}
+               ```
+
+            ## Step 2: Read review comments
+
+            Read review comments needing fixing. Only fix [critical] and [warning] severity. Ignore [nit].
+
+            Get timestamp of last auto-review-fix commit (filter stale comments):
+            ```bash
+            LAST_FIX=$(git log --all --oneline --grep='\[auto-review-fix\]' -1 --format='%aI' 2>/dev/null || echo "1970-01-01T00:00:00Z")
+            echo "Last fix commit: $LAST_FIX"
+            ```
+
+            Read inline review comments after the last fix commit:
+            ```bash
+            gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments" \
+              --paginate --jq '.[] | select(.body | test("\\[(critical|warning)\\]"; "i")) | {path, line: (.line // .original_line), created_at, body}'
+            ```
+
+            If LAST_FIX is not "1970-01-01T00:00:00Z", only process comments created_at > LAST_FIX.
+            If no comments match, post a comment "No actionable review comments found" and exit.
+
+            ## Step 3: Fix issues
+
+            For each review comment:
+            1. Read the referenced file + line to understand context.
+            2. Fix the issue. Minimal, targeted changes.
+
+            ## Step 4: Validate
+
+            multica-server has no app test layer. Just lint:
+            ```bash
+            # Lint changed shell files
+            CHANGED_SH=$(git diff --name-only HEAD~..HEAD | grep -E '\.sh$' || true)
+            if [ -n "$CHANGED_SH" ]; then
+              shellcheck $CHANGED_SH
+              shfmt -d -i 4 -bn -s $CHANGED_SH
+            fi
+            # Lint changed workflow YAML
+            CHANGED_YAML=$(git diff --name-only HEAD~..HEAD | grep -E '\.github/workflows/.*\.yml$' || true)
+            if [ -n "$CHANGED_YAML" ]; then
+              actionlint $CHANGED_YAML
+              yamllint -d "{extends: relaxed, rules: {line-length: {max: 200}, document-start: disable}}" $CHANGED_YAML
+            fi
+            ```
+
+            ## Step 5: Commit and push
+
+            ```bash
+            git add -A
+            git commit -m "fix(review): address round ${{ steps.round.outputs.round }} findings [auto-review-fix]"
+            git push
+            ```
+
+            ## Rules
+
+            - Fix ONLY issues raised in review comments.
+            - Do NOT refactor unrelated code.
+            - Do NOT add features.
+            - Do NOT mass-format the codebase in a fix PR — pre-existing tech debt cleanup is a separate planned PR (see `docs/CI.md`).
+            - Follow patterns from `config/claude/CLAUDE.md` + sibling scripts (`scripts/_lib.sh` for log helpers).
+          claude_args: >-
+            --model claude-sonnet-4-6
+            --effort max
+            --allowedTools
+            "Read,Glob,Grep,Edit,Write,
+            Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),
+            Bash(gh api:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),
+            Bash(shellcheck:*),Bash(shfmt:*),Bash(actionlint:*),Bash(yamllint:*),Bash(bash:*),Bash(echo:*)"
+
+      - name: Remove fix-needed label
+        if: always() && steps.round.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} --remove-label "claude-fix-needed" || true
+
+      - name: Handle failure
+        if: failure() && steps.round.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh pr edit "$PR_NUMBER" --add-label "needs-human-review" || true
+
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode=HTML \
+            --data-urlencode "text=❌ <b>Claude Review Fix (multica-server)</b> не смог пофиксить
+
+          PR: <a href=\"${PR_URL}\">#${PR_NUMBER} ${PR_TITLE}</a>
+          Run: <a href=\"${RUN_URL}\">Actions</a>
+
+          Нужен ручной фикс."
+
+      - name: Notify Telegram — fix pushed
+        if: success() && steps.round.outputs.skip != 'true'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ROUND: ${{ steps.round.outputs.round }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode=HTML \
+            --data-urlencode "text=✅ <b>Claude Review Fix (multica-server)</b> запушил фиксы (round ${ROUND}/3)
+
+          PR: <a href=\"${PR_URL}\">#${PR_NUMBER} ${PR_TITLE}</a>
+
+          Ожидаем повторное ревью..."
