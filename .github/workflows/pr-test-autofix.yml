@@ -1,0 +1,543 @@
+name: PR Test Autofix
+
+# Ported from rabbeet/multica (M4 @ ce402af9) for the multica-server side
+# of PUL-235 (S4, 2026-05-23). Triggered by CI completing with conclusion=
+# failure on a PR branch. multica-server has no app test layer, so "test"
+# autofix scope here = shellcheck / shfmt / actionlint / yamllint failures.
+# Pipeline scaffolding for when an app test layer is eventually added.
+#
+# multica-server-specific deltas vs multica M4:
+#   - Setup: setup-go + pnpm + setup-node → install shellcheck (pre-installed)
+#     + shfmt + actionlint + yamllint via apt/pip/upstream-download (same
+#     pattern as S1 ci.yml + S2 code-review-fix.yml).
+#   - Install dependencies: pnpm install + go mod download → no-op
+#     (no app deps in multica-server).
+#   - Test cmd in prompt: `go test -run '<TestName>'` → run failing lint tool
+#     on changed file: `shellcheck <file>` / `shfmt -d -i 4 -bn -s <file>` /
+#     `actionlint <file>` / `yamllint -d "{extends:relaxed...}" <file>`.
+#   - Lint cmd: gofmt -w → shfmt -w -i 4 -bn -s.
+#   - Forbidden-pattern grep adapted for shell:
+#     - FORBIDDEN_REGEX: Go test-skip patterns → shell lint-suppression
+#       patterns: `# shellcheck disable=SC[0-9]+` (without justification
+#       comment), removed `set -e|set -u|set -o pipefail`, removed
+#       `require_root`/`require_*` from _lib.sh.
+#     - REMOVED_ASSERTS (Go assert/require/t.Fatal) → removed shell
+#       guards: `set -e`, `set -u`, `set -o pipefail`, `[[ ... ]]` checks,
+#       `if [ ... ]; then` validation blocks.
+#     - TEST_DIFF path filter: `_test.go$|.test.tsx?$|/tests/` →
+#       `\.sh$|\.github/workflows/.*\.yml$` (shell scripts + workflow YAML).
+#     - Empty-catch / empty-defer-recover (Go) → empty `if true; then :; fi`
+#       OR empty `case X in ... ;; esac` (silent error swallow in shell).
+#   - test-job-failed regex: `^(backend|frontend|integration|e2e|test)` →
+#     `^(shellcheck|shfmt|actionlint|yamllint)` to match S1 ci.yml job names.
+#   - "Don't edit sqlc-generated files" rule → "Don't mass-format" (same
+#     tech-debt-aware rule from S2 code-review-fix).
+#   - claude_args allowedTools: `Bash(go:*),Bash(gofmt:*),Bash(pnpm:*)` →
+#     `Bash(shellcheck:*),Bash(shfmt:*),Bash(actionlint:*),Bash(yamllint:*),
+#     Bash(bash:*)`.
+#
+# Rev 4 (Pulse, post-incident 2026-05-20) — STRUCTURAL refactor preserved.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    if: |
+      vars.ENABLE_PR_TEST_AUTOFIX != 'false' &&
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_branch != 'main' &&
+      github.event.workflow_run.head_branch != 'develop' &&
+      github.event.workflow_run.head_branch != 'master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read
+    outputs:
+      should_proceed: ${{ steps.gate.outputs.should_proceed }}
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      head_sha: ${{ steps.resolve.outputs.head_sha }}
+      head_branch: ${{ steps.resolve.outputs.head_branch }}
+      run_url: ${{ steps.resolve.outputs.run_url }}
+      round_now: ${{ steps.round.outputs.round_now }}
+      round_done: ${{ steps.round.outputs.round_done }}
+      skip_reason: ${{ steps.gate.outputs.skip_reason }}
+    env:
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+    steps:
+      - name: Self-throttle — check own failure rate
+        id: throttle
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          SINCE=$(date -u -d '30 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+          RECENT_FAILURES=$(gh run list \
+            --repo "$GH_REPO" \
+            --workflow pr-test-autofix.yml \
+            --status failure \
+            --created ">${SINCE}" \
+            --json conclusion --jq 'length')
+          echo "recent_failures=$RECENT_FAILURES" >> "$GITHUB_OUTPUT"
+          if [ "$RECENT_FAILURES" -ge 5 ]; then
+            echo "throttled=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Self-throttling: $RECENT_FAILURES failures in last 30min."
+          else
+            echo "throttled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notify Telegram — self-throttled
+        if: steps.throttle.outputs.throttled == 'true'
+        uses: ./.github/actions/telegram-notify
+        with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            ⚠️ <b>PR Test Autofix (multica-server) self-throttled</b>
+
+            ${{ steps.throttle.outputs.recent_failures }} failures in last 30 min.
+
+            To re-enable: investigate, then <code>gh variable set ENABLE_PR_TEST_AUTOFIX --body true</code>.
+
+      - name: Resolve PR number
+        id: resolve
+        if: steps.throttle.outputs.throttled != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          PR_JSON: ${{ toJSON(github.event.workflow_run.pull_requests) }}
+        run: |
+          set -euo pipefail
+          PR=$(echo "$PR_JSON" | jq -r '.[0].number // empty')
+          if [ -z "$PR" ]; then
+            PR=$(gh api "repos/$GH_REPO/commits/$HEAD_SHA/pulls" \
+                  --jq '[.[] | select(.state == "open")][0].number // empty')
+          fi
+          if [ -z "$PR" ]; then
+            echo "::warning::Cannot resolve PR for head $HEAD_SHA."
+          fi
+          {
+            echo "pr_number=$PR"
+            echo "head_sha=$HEAD_SHA"
+            echo "head_branch=$HEAD_BRANCH"
+            echo "run_url=https://github.com/$GH_REPO/actions/runs/$RUN_ID"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Determine round
+        id: round
+        if: steps.throttle.outputs.throttled != 'true' && steps.resolve.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.resolve.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          ROUND_DONE=$(gh pr view "$PR" --repo "$GH_REPO" --json labels \
+            --jq '[.labels[].name | select(startswith("test-fix-round-"))] | length')
+          ROUND_NOW=$((ROUND_DONE + 1))
+          echo "round_done=$ROUND_DONE" >> "$GITHUB_OUTPUT"
+          echo "round_now=$ROUND_NOW" >> "$GITHUB_OUTPUT"
+
+      - name: Guard — round cap / draft / blocking labels / marker / test-job-failed
+        id: guard
+        if: steps.throttle.outputs.throttled != 'true' && steps.resolve.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.resolve.outputs.pr_number }}
+          HEAD_SHA: ${{ steps.resolve.outputs.head_sha }}
+          ROUND_DONE: ${{ steps.round.outputs.round_done }}
+        run: |
+          set -euo pipefail
+          if [ "$ROUND_DONE" -ge 3 ]; then
+            echo "skip=cap" >> "$GITHUB_OUTPUT"
+            gh pr edit "$PR" --repo "$GH_REPO" --add-label needs-human-review || true
+            exit 0
+          fi
+          META=$(gh pr view "$PR" --repo "$GH_REPO" --json isDraft,labels)
+          IS_DRAFT=$(echo "$META" | jq -r .isDraft)
+          if [ "$IS_DRAFT" = "true" ]; then
+            echo "skip=draft" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          for blocker in needs-human-review claude-fix-needed ci-autofix needs-emergency-revert pr-test-autofix-disabled; do
+            HIT=$(echo "$META" | jq --arg n "$blocker" '[.labels[] | select(.name == $n)] | length')
+            if [ "$HIT" -gt 0 ]; then
+              echo "skip=blocking-label:$blocker" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          COMMIT_MSG=$(gh api "repos/$GH_REPO/commits/$HEAD_SHA" --jq '.commit.message')
+          if echo "$COMMIT_MSG" | grep -q '\[auto-test-fix\]'; then
+            echo "skip=marker" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # multica-server CI job names from S1 ci.yml.
+          FAILED_TEST_JOBS=$(gh api "/repos/$GH_REPO/actions/runs/$RUN_ID/jobs" \
+            --jq '[.jobs[] | select(.conclusion=="failure" and (.name | test("^(shellcheck|shfmt|actionlint|yamllint)")))] | length')
+          if [ "$FAILED_TEST_JOBS" -eq 0 ]; then
+            echo "skip=no-test-failures" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=" >> "$GITHUB_OUTPUT"
+
+      - name: Extract failed lint logs
+        id: logs
+        if: steps.guard.outputs.skip == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          gh run view "$RUN_ID" --repo "$GH_REPO" --log-failed 2>/dev/null \
+            | grep -E '(SC[0-9]+|error:|warning:|^---|^\+\+\+|^@@|shellcheck reported|shfmt|actionlint|yamllint)' \
+            | head -500 > /tmp/failed-tests.txt || true
+          if [ ! -s /tmp/failed-tests.txt ]; then
+            gh run view "$RUN_ID" --repo "$GH_REPO" --log-failed 2>/dev/null \
+              | tail -200 > /tmp/failed-tests.txt || true
+          fi
+          if [ ! -s /tmp/failed-tests.txt ]; then
+            echo "skip=empty-logs" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=" >> "$GITHUB_OUTPUT"
+            echo "Captured $(wc -l < /tmp/failed-tests.txt) lines of failed-lint context."
+          fi
+
+      - name: Upload failed-test logs (handoff to autofix job)
+        if: steps.guard.outputs.skip == '' && steps.logs.outputs.skip == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-tests-${{ github.run_id }}
+          path: /tmp/failed-tests.txt
+          retention-days: 1
+
+      - name: Aggregate should_proceed
+        id: gate
+        if: always() && steps.throttle.outputs.throttled != 'true'
+        env:
+          THROTTLED: ${{ steps.throttle.outputs.throttled }}
+          PR_NUMBER: ${{ steps.resolve.outputs.pr_number }}
+          GUARD_SKIP: ${{ steps.guard.outputs.skip }}
+          LOGS_SKIP: ${{ steps.logs.outputs.skip }}
+        run: |
+          set -uo pipefail
+          if [ "$THROTTLED" = "true" ]; then
+            REASON="throttled"
+          elif [ -z "$PR_NUMBER" ]; then
+            REASON="no-pr"
+          elif [ -n "$GUARD_SKIP" ]; then
+            REASON="$GUARD_SKIP"
+          elif [ -n "$LOGS_SKIP" ]; then
+            REASON="$LOGS_SKIP"
+          else
+            REASON=""
+          fi
+          if [ -z "$REASON" ]; then
+            echo "should_proceed=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_proceed=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=$REASON" >> "$GITHUB_OUTPUT"
+            echo "Preflight gate: skip ($REASON)"
+          fi
+
+      - name: Notify Telegram — empty logs
+        if: steps.gate.outputs.skip_reason == 'empty-logs'
+        uses: ./.github/actions/telegram-notify
+        with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            ⚠️ <b>PR Test Autofix (multica-server)</b> — не смог извлечь логи (timeout/cancelled?). Manual review.
+
+            PR: <a href="https://github.com/${{ github.repository }}/pull/${{ steps.resolve.outputs.pr_number }}">#${{ steps.resolve.outputs.pr_number }}</a>
+            Run: <a href="${{ steps.resolve.outputs.run_url }}">CI run</a>
+
+      - name: Notify Telegram — round cap
+        if: steps.gate.outputs.skip_reason == 'cap'
+        uses: ./.github/actions/telegram-notify
+        with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            ⚠️ <b>PR Test Autofix (multica-server)</b> — 3 раунда исчерпаны
+
+            PR: <a href="https://github.com/${{ github.repository }}/pull/${{ steps.resolve.outputs.pr_number }}">#${{ steps.resolve.outputs.pr_number }}</a>
+
+            Нужен ручной разбор.
+
+  autofix:
+    needs: preflight
+    if: needs.preflight.outputs.should_proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: pr-test-autofix-${{ needs.preflight.outputs.pr_number }}
+      cancel-in-progress: true
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    env:
+      GH_REPO: ${{ github.repository }}
+      PR: ${{ needs.preflight.outputs.pr_number }}
+      PR_URL: https://github.com/${{ github.repository }}/pull/${{ needs.preflight.outputs.pr_number }}
+      HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
+      BRANCH: ${{ needs.preflight.outputs.head_branch }}
+      RUN_URL: ${{ needs.preflight.outputs.run_url }}
+      ROUND_NOW: ${{ needs.preflight.outputs.round_now }}
+    steps:
+      - name: Notify Telegram — started
+        continue-on-error: true
+        uses: ./.github/actions/telegram-notify
+        with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            🔧 <b>PR Test Autofix (multica-server)</b> взял PR в работу (round ${{ env.ROUND_NOW }}/3)
+
+            PR: <a href="${{ env.PR_URL }}">#${{ env.PR }}</a>
+
+      - name: Checkout PR branch (AGENT_PULSE_PAT for downstream-trigger pushes)
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.head_branch }}
+          fetch-depth: 0
+          token: ${{ secrets.AGENT_PULSE_PAT }}
+
+      - name: Install shell tooling
+        run: |
+          set -euo pipefail
+          if ! command -v shfmt >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y shfmt
+          fi
+          if ! command -v yamllint >/dev/null 2>&1; then
+            python3 -m pip install --user yamllint
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
+          cd /tmp
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.7
+          sudo mv /tmp/actionlint /usr/local/bin/actionlint
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Download failed-test logs (from preflight artifact)
+        uses: actions/download-artifact@v4
+        with:
+          name: failed-tests-${{ github.run_id }}
+          path: /tmp
+
+      - name: Capture base SHA
+        id: base
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Run Claude auto-fix
+        id: claude
+        timeout-minutes: 15
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: "github-actions,claude"
+          additional_permissions: |
+            actions: read
+          prompt: |
+            Ты чинишь упавшие lint-проверки на PR #${{ env.PR }} в ${{ github.repository }}.
+            Это раунд ${{ env.ROUND_NOW }}/3.
+
+            Это **multica-server** — shell-only infra repo. Нет app code,
+            нет тестов. "test autofix" здесь = чинить shellcheck / shfmt /
+            actionlint / yamllint провалы.
+
+            ## Failed CI run
+
+            - Workflow: CI
+            - Run URL: ${{ env.RUN_URL }}
+            - Логи: `/tmp/failed-tests.txt` (focused grep на SC*/error*/warning*/diff).
+
+            ## Шаги
+
+            1. Прочитай `config/claude/CLAUDE.md` для project conventions.
+            2. Прочитай `/tmp/failed-tests.txt`. Идентифицируй каждый failure: какой tool (shellcheck/shfmt/actionlint/yamllint), какой файл, какой код (SC1234 для shellcheck).
+            3. Для каждого failure:
+               a. Прочитай файл + контекст.
+               b. **Default: чини сам файл (script или workflow YAML), не подавляй проверку.** Если shellcheck говорит SC2086 (unquoted variable) — добавь кавычки. Если actionlint говорит "missing permissions" — добавь блок permissions:. Если yamllint complains line-length — переноси на несколько строк.
+               c. **НИКОГДА** не делай:
+                  - `# shellcheck disable=SC[0-9]+` без обоснования в комментарии (рядом должен быть `# justification: <why>` или ссылка на issue)
+                  - Удаление `set -e`, `set -u`, `set -o pipefail` чтобы скрыть failure
+                  - Удаление `require_root` или других guards из scripts/_lib.sh
+                  - `# yamllint disable-line` без обоснования
+                  - Удаление целых `if [ ... ]; then ... fi` блоков чтобы скрыть warning
+                  Post-step grep+revert поймает такие паттерны и откатит коммит.
+            4. Validate ТОЛЬКО изменённый файл:
+               ```bash
+               CHANGED_FILE=<file>
+               if [[ "$CHANGED_FILE" == *.sh ]]; then
+                 shellcheck "$CHANGED_FILE"
+                 shfmt -d -i 4 -bn -s "$CHANGED_FILE"
+               elif [[ "$CHANGED_FILE" == .github/workflows/*.yml ]]; then
+                 actionlint "$CHANGED_FILE"
+                 yamllint -d "{extends: relaxed, rules: {line-length: {max: 200}, document-start: disable}}" "$CHANGED_FILE"
+               fi
+               ```
+            5. shfmt -w если нужно format-applying:
+               `shfmt -w -i 4 -bn -s <changed shell files>`
+            6. **Commit ТОЛЬКО** (НЕ push — workflow push сам после grep check):
+               ```
+               git add -A
+               git commit -m "fix(lint): round ${{ env.ROUND_NOW }} — <symptom> [auto-test-fix]"
+               ```
+               Маркер `[auto-test-fix]` обязателен — анти-петля.
+
+            ## Rules
+
+            - Чини ТОЛЬКО упавшие lint'ы + файлы которые они трогают.
+            - НЕ рефакторь несвязанный код.
+            - НЕ массово format'ируй весь codebase в fix PR (tech-debt cleanup — отдельный PR, см. docs/CI.md).
+            - НЕ добавляй disable-directives без обоснования.
+            - Если корневая причина неясна — выходи. Лучше `needs-human-review`.
+          claude_args: >-
+            --model claude-sonnet-4-6
+            --allowedTools
+            "Read,Glob,Grep,Edit,Write,
+            Bash(git add:*),Bash(git commit:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),
+            Bash(gh api:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),
+            Bash(shellcheck:*),Bash(shfmt:*),Bash(actionlint:*),Bash(yamllint:*),Bash(bash:*),Bash(echo:*),Bash(cat:*),Bash(head:*),Bash(tail:*)"
+
+      - name: Forbidden-pattern grep (mandatory)
+        id: grep_check
+        if: steps.claude.outcome == 'success'
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: |
+          #!/usr/bin/env bash
+          set -uo pipefail
+
+          if [ "$(git rev-parse HEAD)" = "$BASE_SHA" ]; then
+            echo "No new commits since BASE_SHA — Claude exited without changes."
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+            echo "no_changes=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          DIFF=$(git diff "$BASE_SHA" HEAD)
+          # multica-server path filter: shell scripts + workflow YAML.
+          TARGET_DIFF=$(echo "$DIFF" | awk '
+            /^diff --git/ {
+              path=$0
+              in_target = (path ~ /\.sh$|\.github\/workflows\/.*\.yml$|\.github\/actions\/.*\.ya?ml$/)
+            }
+            in_target { print }
+          ')
+
+          # Forbidden suppression patterns (shell + YAML lint suppression
+          # without justification + removed safety guards).
+          FORBIDDEN_REGEX='shellcheck disable=SC[0-9]+|yamllint disable-line|actionlint:.*ignore'
+          REMOVED_GUARDS=$(echo "$TARGET_DIFF" | grep -E '^-\s*(set -e|set -u|set -o pipefail|set -euo pipefail|require_root|require_[a-z_]+)' || true)
+          # Lint disable WITHOUT a justification keyword nearby.
+          # Catches: bare (sh*ellcheck disable=SCxxxx) on a line.
+          BARE_DISABLE=$(echo "$TARGET_DIFF" | grep '^+' | grep -E "$FORBIDDEN_REGEX" | grep -vE 'justification|justified|reason:|see #|see issue' || true)
+
+          if [ -n "$REMOVED_GUARDS" ] || [ -n "$BARE_DISABLE" ]; then
+            echo "::error::Forbidden suppression pattern detected. Local-only revert (nothing pushed to remote yet — A3 commit-only flow)."
+            if [ -n "$REMOVED_GUARDS" ]; then
+              echo "Removed safety guards ($(echo "$REMOVED_GUARDS" | wc -l) lines, first 20):"
+              echo "$REMOVED_GUARDS" | head -20
+            fi
+            if [ -n "$BARE_DISABLE" ]; then
+              echo "Lint disables without justification ($(echo "$BARE_DISABLE" | wc -l) lines, first 20):"
+              echo "$BARE_DISABLE" | head -20
+            fi
+            git reset --hard "$BASE_SHA"
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "✓ No forbidden patterns in auto-fix diff. Safe to push."
+          echo "passed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Push to PR branch
+        id: push
+        if: |
+          steps.claude.outcome == 'success' &&
+          steps.grep_check.outputs.passed == 'true' &&
+          steps.grep_check.outputs.no_changes != 'true'
+        run: |
+          set -euo pipefail
+          git push origin "$BRANCH"
+
+      - name: Add round label
+        if: success() && steps.push.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr edit "$PR" --repo "$GH_REPO" --add-label "test-fix-round-${ROUND_NOW}" || true
+
+      - name: Notify Telegram — reverted (bad pattern caught, label)
+        if: failure() && steps.grep_check.outputs.passed == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_PULSE_PAT }}
+        run: |
+          gh pr edit "$PR" --repo "$GH_REPO" --add-label needs-human-review || true
+
+      - name: Notify Telegram — reverted (bad pattern caught, alert)
+        if: failure() && steps.grep_check.outputs.passed == 'false'
+        uses: ./.github/actions/telegram-notify
+        with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            ⚠️ <b>pr-test-autofix REVERTED (multica-server)</b> — Claude tried to suppress lints. Local-only revert.
+
+            PR: <a href="${{ env.PR_URL }}">#${{ env.PR }}</a>
+
+      - name: Safety net — escalate
+        if: |
+          !cancelled() &&
+          (steps.claude.outcome == 'cancelled' ||
+           steps.claude.outcome == 'failure' ||
+           (steps.claude.outcome == 'success' && steps.grep_check.outcome != 'success' && steps.grep_check.outputs.passed != 'false'))
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_PULSE_PAT }}
+        run: |
+          gh pr edit "$PR" --repo "$GH_REPO" --add-label needs-human-review || true
+
+      - name: Safety net — Telegram alert
+        if: |
+          !cancelled() &&
+          (steps.claude.outcome == 'cancelled' ||
+           steps.claude.outcome == 'failure' ||
+           (steps.claude.outcome == 'success' && steps.grep_check.outcome != 'success' && steps.grep_check.outputs.passed != 'false'))
+        uses: ./.github/actions/telegram-notify
+        with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            ⚠️ <b>pr-test-autofix safety-net (multica-server)</b> — claude=${{ steps.claude.outcome }}, grep=${{ steps.grep_check.outcome }}. Manual review needed.
+
+            PR: <a href="${{ env.PR_URL }}">#${{ env.PR }}</a>
+
+      - name: Notify Telegram — pushed (success)
+        if: success() && steps.push.outcome == 'success'
+        uses: ./.github/actions/telegram-notify
+        with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            ✅ <b>PR Test Autofix (multica-server)</b> запушил фиксы (round ${{ env.ROUND_NOW }}/3)
+
+            PR: <a href="${{ env.PR_URL }}">#${{ env.PR }}</a>
+
+            Ожидаем повторный CI rerun...
