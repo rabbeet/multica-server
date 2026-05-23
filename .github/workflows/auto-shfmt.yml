@@ -1,0 +1,105 @@
+name: auto-shfmt
+
+# Ported from rabbeet/multica (M3 auto-gofmt @ 7f8eb274) for the multica-
+# server side of PUL-235 (S3, 2026-05-23). multica-server-specific:
+#   - Format target: server/ → scripts/ + agent/ (shell scripts).
+#   - Tool: gofmt → shfmt -i 4 -bn -s -w (matches CI ci.yml settings).
+#   - Setup-go@v5 → apt-get install shfmt (same on-demand pattern as
+#     S1 ci.yml shfmt job).
+#   - Loop guard via `pulse-autofix-bot` author identity (same as Pulse
+#     + multica — shared PAT identity until PUL-236 unifies).
+#
+# Auto-fix shfmt drift on agent-* PRs. Runs `shfmt -w` on scripts/+agent/,
+# commits as `[autofix] shfmt`, pushes via AGENT_PULSE_PAT to retrigger CI.
+#
+# Scope: agent-* branches only.
+# Loop guard: skip if HEAD authored by pulse-autofix-bot.
+# Required secret: AGENT_PULSE_PAT (Contents:write on rabbeet/multica-server).
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+concurrency:
+  group: auto-shfmt-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  autoshfmt:
+    if: startsWith(github.event.pull_request.head.ref, 'agent-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: PAT presence check
+        id: pat_check
+        env:
+          PAT: ${{ secrets.AGENT_PULSE_PAT }}
+        run: |
+          if [ -z "$PAT" ]; then
+              echo "::warning::AGENT_PULSE_PAT not configured — auto-shfmt skipped"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Loop guard — exit if HEAD is autofix-bot's commit
+        id: guard
+        if: steps.pat_check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          author=$(gh api "repos/$GH_REPO/commits/$HEAD_SHA" \
+            --jq '.commit.author.email + " " + .commit.author.name')
+          echo "head author: $author"
+          if echo "$author" | grep -qE '(pulse-autofix-bot|autofix@pulse)'; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::HEAD authored by autofix bot — skipping to prevent loop"
+          else
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout PR head
+        if: steps.pat_check.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          token: ${{ secrets.AGENT_PULSE_PAT }}
+          fetch-depth: 0
+
+      - name: Install shfmt
+        if: steps.pat_check.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
+        run: |
+          if ! command -v shfmt >/dev/null 2>&1; then
+              sudo apt-get update -qq
+              sudo apt-get install -y shfmt
+          fi
+
+      - name: Run shfmt (apply fixes)
+        if: steps.pat_check.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
+        run: |
+          # Same settings as ci.yml shfmt job (4-space indent, binary ops at
+          # line start, simplify). Idempotent — exits 0 if nothing changed.
+          shfmt -w -i 4 -bn -s scripts/ agent/
+
+      - name: Commit + push if dirty
+        if: steps.pat_check.outputs.skip != 'true' && steps.guard.outputs.skip != 'true'
+        run: |
+          if git diff --quiet; then
+              echo "no shfmt changes — exit clean"
+              exit 0
+          fi
+          git config user.name 'pulse-autofix-bot'
+          git config user.email 'autofix@pulse.dev'
+          git add -A
+          git commit -m '[autofix] shfmt
+
+          Auto-applied by .github/workflows/auto-shfmt.yml.
+          PUL-235 S3 — auto-fix shfmt drift on agent-* PRs.'
+          git push
