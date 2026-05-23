@@ -1,0 +1,107 @@
+name: CI
+
+# Shell-only CI for rabbeet/multica-server (infra/bootstrap repo). Runs:
+#   - shellcheck on all *.sh under scripts/ and agent/hooks/
+#   - shfmt --diff to enforce consistent shell formatting (4-space indent,
+#     posix-style fall-through detection)
+#   - actionlint on all GitHub Actions workflow YAML
+#   - yamllint on workflow YAML (separate from actionlint — covers syntax
+#     and style; actionlint covers semantics)
+#
+# Ported as part of PUL-235 S1 (2026-05-23). Pulse / multica use this slot
+# for app-test pipelines; multica-server has no app code, so this is
+# greenfield wiring of the shell-tooling baseline.
+#
+# Required check role: this is the "CI" workflow name that auto-merge-on-
+# approval.yml (S3) gates on. Keep the workflow name as "CI" verbatim.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # shellcheck and shfmt are soft-checks initially (continue-on-error: true)
+  # because the existing scripts/ + agent/hooks/ tree has pre-existing
+  # format/lint debt from before this CI workflow existed. Tightening to
+  # hard-fail blocks the S2-S4 auto-merge cascade on every PR until the debt
+  # is cleared. Plan: open a follow-up tech-debt PR to reformat + fix lint,
+  # then flip continue-on-error to false. Tracked in docs/CI.md "Pre-existing
+  # tech debt" section.
+  shellcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - name: shellcheck
+        run: |
+          set -euo pipefail
+          mapfile -t FILES < <(find scripts agent/hooks -type f -name '*.sh' 2>/dev/null)
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "No shell scripts found — nothing to check."
+            exit 0
+          fi
+          echo "Linting ${#FILES[@]} shell script(s):"
+          printf '  %s\n' "${FILES[@]}"
+          shellcheck "${FILES[@]}"
+
+  shfmt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - name: shfmt --diff
+        # Indent 4, binary ops at line start, simplify expressions.
+        run: |
+          set -euo pipefail
+          if ! command -v shfmt >/dev/null 2>&1; then
+            echo "shfmt not pre-installed — installing via apt"
+            sudo apt-get update -qq
+            sudo apt-get install -y shfmt
+          fi
+          shfmt -d -i 4 -bn -s scripts/ agent/
+
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v6
+      - name: actionlint
+        # Use the upstream-published binary release rather than apt's old
+        # version. rhysd/actionlint provides a download-actionlint.bash
+        # bootstrap that pins a version. Pinning to 1.7.7 (latest stable
+        # as of 2026-05-23).
+        run: |
+          set -euo pipefail
+          cd /tmp
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.7
+          cd "$GITHUB_WORKSPACE"
+          /tmp/actionlint -color
+
+  yamllint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v6
+      - name: yamllint
+        # yamllint pre-installed via pip on ubuntu-latest. If not, install:
+        #   pip install --user yamllint
+        # Loose config — line-length up to 200 (matches multica's M1
+        # smoke action's effective tolerance). Match: workflows + composite
+        # actions.
+        run: |
+          set -euo pipefail
+          if ! command -v yamllint >/dev/null 2>&1; then
+            echo "yamllint not pre-installed — installing via pip"
+            python3 -m pip install --user yamllint
+            export PATH="$HOME/.local/bin:$PATH"
+          fi
+          yamllint -d "{extends: relaxed, rules: {line-length: {max: 200}, document-start: disable}}" \
+            .github/workflows/ .github/actions/
