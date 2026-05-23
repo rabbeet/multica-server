@@ -128,14 +128,14 @@ jobs:
       - name: Diagnostic — secret length
         if: steps.gates.outputs.merge == 'true'
         env:
-          PAT: ${{ secrets.AGENT_PULSE_PAT }}
+          PAT: ${{ secrets.GH_AUTOFIX_TOKEN }}
         run: |
-          echo "AGENT_PULSE_PAT length: ${#PAT}"
+          echo "GH_AUTOFIX_TOKEN length: ${#PAT}"
 
       - name: Merge with PAT
         if: steps.gates.outputs.merge == 'true'
         env:
-          GH_TOKEN: ${{ secrets.AGENT_PULSE_PAT }}
+          GH_TOKEN: ${{ secrets.GH_AUTOFIX_TOKEN }}
           GH_REPO: ${{ github.repository }}
           PR: ${{ steps.pr.outputs.pr_number }}
         run: |

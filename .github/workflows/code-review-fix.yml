@@ -81,7 +81,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
-          token: ${{ secrets.AGENT_PULSE_PAT }}
+          token: ${{ secrets.GH_AUTOFIX_TOKEN }}
 
       - name: Install shell tooling
         if: steps.round.outputs.skip != 'true'

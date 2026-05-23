@@ -57,14 +57,14 @@ Actions. **Phase 0 prerequisite** — must be set before S2-S4 land.
 | Secret | Used by | Source |
 |---|---|---|
 | `CLAUDE_CODE_OAUTH_TOKEN` | code-review, code-review-fix, ci-autofix, pr-test-autofix | `op://Pulse-Dev/Pulse-env/CLAUDE_CODE_OAUTH_TOKEN` |
-| `AGENT_PULSE_PAT` | auto-shfmt, auto-merge-on-approval, code-review-fix, ci-autofix, pr-test-autofix | `op://Pulse-Dev/Pulse-env/AGENT_PULSE_PAT` (same PAT shared across Pulse + multica + multica-server) |
+| `GH_AUTOFIX_TOKEN` | auto-shfmt, auto-merge-on-approval, code-review-fix, ci-autofix, pr-test-autofix | `op://Pulse-Dev/Pulse-env/GH_AUTOFIX_TOKEN` (same PAT shared across Pulse + multica + multica-server) |
 | `TELEGRAM_BOT_TOKEN` | code-review, ci-autofix, pr-test-autofix | `op://Pulse-Dev/Pulse-env/TELEGRAM_BOT_TOKEN` |
 | `TELEGRAM_CHAT_ID` | (same as above) | `op://Pulse-Dev/Pulse-env/TELEGRAM_CHAT_ID` |
 
 One-liner (from a machine with 1Password CLI + `gh` auth):
 
 ```bash
-for K in CLAUDE_CODE_OAUTH_TOKEN AGENT_PULSE_PAT TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID; do
+for K in CLAUDE_CODE_OAUTH_TOKEN GH_AUTOFIX_TOKEN TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID; do
   gh secret set --repo rabbeet/multica-server "$K" --body "$(op read "op://Pulse-Dev/Pulse-env/$K")"
 done
 ```
