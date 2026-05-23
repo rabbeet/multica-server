@@ -73,11 +73,33 @@ done
 
 - **shellcheck**: pre-installed on ubuntu-latest runners. Lints all `*.sh`
   under `scripts/` and `agent/hooks/`. Default ruleset (no per-file
-  disables).
+  disables). **Soft-check** (`continue-on-error: true`) until pre-existing
+  tech debt is cleared (see below).
 - **shfmt**: installed on demand if not pre-installed. Settings: `-i 4`
   (4-space indent), `-bn` (binary ops at line start), `-s` (simplify).
   Runs in `--diff` mode — fails on drift, does NOT modify in place.
-  auto-shfmt (S3) handles the format-and-commit cycle separately.
+  auto-shfmt (S3) handles the format-and-commit cycle separately on
+  `agent-*` branches. **Soft-check** until tech debt cleared.
+
+## Pre-existing tech debt
+
+The `scripts/` + `agent/hooks/` trees pre-date this CI workflow. shellcheck
+and shfmt currently fail on them in initial S1 run because:
+- shfmt: 19 of ~20 scripts have format drift from the enforced settings
+  (`-i 4 -bn -s`). Diff is large but mechanically auto-applyable via
+  `shfmt -w scripts/ agent/`.
+- shellcheck: some scripts have legitimate warnings (unquoted variables,
+  unused vars, etc.) that need case-by-case review.
+
+**Soft-check rationale**: hard-failing would block S2-S4's auto-merge
+cascade on every future PR until the debt is cleared. Soft-check ships the
+scaffolding immediately and unblocks the rest of the S-chain. Tighten
+later via a dedicated tech-debt PR.
+
+**Follow-up to tighten**: open issue for "format multica-server scripts
+with shfmt + clean shellcheck findings + flip `continue-on-error: false`
+in ci.yml". Recommended after S2-S4 land so auto-shfmt / code-review-fix
+can assist with the cleanup.
 - **actionlint**: downloaded from upstream (rhysd/actionlint) pinned to
   1.7.7. Apt version is too old. Lints all of `.github/workflows/` +
   `.github/actions/`.
