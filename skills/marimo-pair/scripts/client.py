@@ -46,7 +46,6 @@ import re
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -82,24 +81,8 @@ def _http_get_text(url: str, *, auth: str = "") -> str:
         return r.read().decode("utf-8", errors="ignore")
 
 
-def _http_post_json(url: str, body: dict, *, auth: str = "",
-                    extra_headers: dict | None = None) -> int:
-    headers = {"Content-Type": "application/json"}
-    if auth:
-        headers["Authorization"] = f"Bearer {auth}"
-    if extra_headers:
-        headers.update(extra_headers)
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as r:
-            return r.status
-    except urllib.error.HTTPError as e:
-        msg = e.read().decode("utf-8", errors="ignore")[:200]
-        raise RuntimeError(f"POST {url} HTTP {e.code}: {msg}") from None
-
-
-def discover(port: int | None = None) -> dict[str, Any]:
+def discover(port: int | None = None,
+             session_id: str | None = None) -> dict[str, Any]:
     """Locate a live marimo server + session, return everything callers need.
 
     Returns a dict with keys: base, host, port, base_url, server_id,
@@ -138,14 +121,24 @@ def discover(port: int | None = None) -> dict[str, Any]:
             "marimo server has no active sessions "
             "(open a notebook in the browser first)"
         )
-    if len(sids) > 1:
+    if session_id is not None:
+        if session_id not in sessions:
+            listing = "; ".join(
+                f"{k}={v.get('filename', '?')}" for k, v in sessions.items()
+            )
+            raise RuntimeError(
+                f"session_id {session_id!r} not found. Available: {listing}"
+            )
+        sid = session_id
+    elif len(sids) > 1:
         listing = "; ".join(
             f"{k}={v.get('filename', '?')}" for k, v in sessions.items()
         )
         raise RuntimeError(
             f"multiple sessions on server; pass --session-id. {listing}"
         )
-    sid = sids[0]
+    else:
+        sid = sids[0]
     filename = sessions[sid].get("filename", "")
 
     html = _http_get_text(f"{base}/", auth=auth_token)
@@ -248,8 +241,13 @@ CELL_ID = {cell_id!r}
 with open({code_path!r}, encoding="utf-8") as _f:
     NEW_CODE = _f.read()
 
+# edit_cell raises StaleCellError unless the agent first reads the cell at
+# its current version. The reactive run is triggered on context-exit by
+# ctx.run_cell(); without it edit_cell queues but never executes.
 async with _cm.get_context() as ctx:
-    await ctx.edit_cell(CELL_ID, NEW_CODE)
+    _ = ctx.cells[CELL_ID].code
+    ctx.edit_cell(CELL_ID, NEW_CODE)
+    ctx.run_cell(CELL_ID)
     print("EDIT_OK", CELL_ID)
 """
 
@@ -266,20 +264,31 @@ def edit_cell(disc: dict[str, Any], cell_id: str, code_file: str, *,
         )
 
 
-def run_cells(disc: dict[str, Any], cell_ids: list[str],
-              codes: list[str]) -> None:
-    """POST /api/kernel/run with cell_ids+codes (snake_case body)."""
-    if len(cell_ids) != len(codes):
-        raise ValueError("run_cells: cell_ids and codes must be same length")
-    body = {"cell_ids": cell_ids, "codes": codes}
-    extra = {
-        "Marimo-Session-Id": disc["session_id"],
-        "Marimo-Server-Token": disc["server_token"],
-    }
-    _http_post_json(
-        f"{disc['base']}/api/kernel/run", body,
-        auth=disc.get("auth_token", ""), extra_headers=extra,
-    )
+_RUN_TEMPLATE = """\
+import marimo._code_mode as _cm
+
+CELL_ID = {cell_id!r}
+
+# Read cell first so edit_cell-style staleness checks are satisfied for
+# any caller that wants to chain an edit afterward. run_cell on its own
+# doesn't need the read but the read is free.
+async with _cm.get_context() as ctx:
+    _ = ctx.cells[CELL_ID].code
+    ctx.run_cell(CELL_ID)
+    print("RUN_OK", CELL_ID)
+"""
+
+
+def run_cell_kernel(disc: dict[str, Any], cell_id: str, *,
+                    timeout: float = _DUMP_EXEC_TIMEOUT) -> None:
+    """Queue a cell for re-run via code_mode ctx.run_cell."""
+    code = _RUN_TEMPLATE.format(cell_id=cell_id)
+    out = _exec_in_kernel(disc, code, timeout=timeout)
+    if f"RUN_OK {cell_id}" not in out:
+        raise RuntimeError(
+            f"run_cell {cell_id}: kernel did not confirm RUN_OK "
+            f"(stdout head: {out[:200]!r})"
+        )
 
 
 def poll_cell(disc: dict[str, Any], cell_id: str, *,
@@ -320,13 +329,13 @@ def poll_cell(disc: dict[str, Any], cell_id: str, *,
 
 
 def _cmd_discover(args: argparse.Namespace) -> int:
-    print(json.dumps(discover(args.port), indent=2))
+    print(json.dumps(discover(args.port, args.session_id), indent=2))
     return 0
 
 
 def _cmd_ping(args: argparse.Namespace) -> int:
     try:
-        d = discover(args.port)
+        d = discover(args.port, args.session_id)
     except Exception as e:  # noqa: BLE001 — we want any failure surfaced
         print(json.dumps({"ok": False, "error": str(e)}))
         return 2
@@ -340,14 +349,14 @@ def _cmd_ping(args: argparse.Namespace) -> int:
 
 
 def _cmd_dump_cells(args: argparse.Namespace) -> int:
-    d = discover(args.port)
+    d = discover(args.port, args.session_id)
     cells = dump_cells(d, args.cell_id or None, include_code=args.with_code)
     print(json.dumps(cells, indent=2))
     return 0
 
 
 def _cmd_edit_and_run(args: argparse.Namespace) -> int:
-    d = discover(args.port)
+    d = discover(args.port, args.session_id)
     t0 = time.monotonic()
     edit_cell(d, args.cell_id, args.code_file)
     result = poll_cell(d, args.cell_id, timeout_s=args.timeout)
@@ -361,14 +370,14 @@ def _cmd_edit_and_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_run_cell(args: argparse.Namespace) -> int:
-    d = discover(args.port)
-    cells = dump_cells(d, [args.cell_id], include_code=True)
+    d = discover(args.port, args.session_id)
+    # Verify cell exists before triggering a run.
+    cells = dump_cells(d, [args.cell_id])
     if not cells:
         print(json.dumps({"error": f"cell {args.cell_id} not found"}))
         return 2
-    code = cells[0].get("code", "")
     t0 = time.monotonic()
-    run_cells(d, [args.cell_id], [code])
+    run_cell_kernel(d, args.cell_id)
     result = poll_cell(d, args.cell_id, timeout_s=args.timeout)
     result["wall_s"] = round(time.monotonic() - t0, 3)
     print(json.dumps(result))
@@ -379,20 +388,27 @@ def _cmd_run_cell(args: argparse.Namespace) -> int:
     return 0
 
 
+def _add_session_args(s: argparse.ArgumentParser) -> None:
+    s.add_argument("--port", type=int, default=None,
+                   help="marimo server port (auto when only one is running)")
+    s.add_argument("--session-id", default=None,
+                   help="session id (auto when the server has one session)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="client.py")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("discover", help="print server/session discovery JSON")
-    s.add_argument("--port", type=int, default=None)
+    _add_session_args(s)
     s.set_defaults(fn=_cmd_discover)
 
     s = sub.add_parser("ping", help="health probe")
-    s.add_argument("--port", type=int, default=None)
+    _add_session_args(s)
     s.set_defaults(fn=_cmd_ping)
 
     s = sub.add_parser("dump-cells", help="dump cell state via code_mode")
-    s.add_argument("--port", type=int, default=None)
+    _add_session_args(s)
     s.add_argument("--cell-id", action="append", default=None,
                    help="filter to one cell (repeat to add)")
     s.add_argument("--with-code", action="store_true",
@@ -401,7 +417,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("edit-and-run",
                        help="replace cell code + wait for run")
-    s.add_argument("--port", type=int, default=None)
+    _add_session_args(s)
     s.add_argument("--cell-id", required=True)
     s.add_argument("--code-file", required=True,
                    help="path to file containing the new cell body")
@@ -411,7 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("run-cell",
                        help="re-run existing cell with current code")
-    s.add_argument("--port", type=int, default=None)
+    _add_session_args(s)
     s.add_argument("--cell-id", required=True)
     s.add_argument("--timeout", type=float, default=60.0)
     s.set_defaults(fn=_cmd_run_cell)

@@ -10,7 +10,8 @@
 # Usage:
 #   edit-and-run.sh CELL_ID CODE_FILE        # read code from file
 #   echo 'print(1+1)' | edit-and-run.sh CELL_ID -   # read code from stdin
-#   edit-and-run.sh [--port N] [--timeout S] [--no-lint] CELL_ID CODE_FILE
+#   edit-and-run.sh [--port N] [--session-id S] [--timeout S]
+#                   [--no-lint] CELL_ID CODE_FILE
 #
 # Exit codes:
 #   0    cell ran, no errors, persisted, lint green
@@ -30,6 +31,7 @@ CLIENT="$SCRIPT_DIR/client.py"
 LINT="$SCRIPT_DIR/lint-and-persist.sh"
 
 port=""
+session_id=""
 timeout="60"
 do_lint="true"
 cell_id=""
@@ -37,12 +39,13 @@ code_path=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --port)    port="$2"; shift 2 ;;
-    --timeout) timeout="$2"; shift 2 ;;
-    --no-lint) do_lint="false"; shift ;;
-    -h|--help) sed -n '3,28p' "$0" >&2; exit 0 ;;
-    --) shift; break ;;
-    -*) echo "Unknown option: $1" >&2; exit 2 ;;
+    --port)       port="$2"; shift 2 ;;
+    --session-id) session_id="$2"; shift 2 ;;
+    --timeout)    timeout="$2"; shift 2 ;;
+    --no-lint)    do_lint="false"; shift ;;
+    -h|--help)    sed -n '3,29p' "$0" >&2; exit 0 ;;
+    --)           shift; break ;;
+    -*)           echo "Unknown option: $1" >&2; exit 2 ;;
     *)
       if [[ -z "$cell_id" ]]; then
         cell_id="$1"
@@ -84,6 +87,9 @@ args=("edit-and-run" "--cell-id" "$cell_id" "--code-file" "$code_path" "--timeou
 if [[ -n "$port" ]]; then
   args+=("--port" "$port")
 fi
+if [[ -n "$session_id" ]]; then
+  args+=("--session-id" "$session_id")
+fi
 
 # Capture both client.py exit code AND its stdout. We pass stdout through
 # to the caller regardless, then optionally chain lint-and-persist.
@@ -101,6 +107,7 @@ fi
 if [[ "$do_lint" == "true" ]]; then
   lint_args=()
   [[ -n "$port" ]] && lint_args+=(--port "$port")
+  [[ -n "$session_id" ]] && lint_args+=(--session "$session_id")
   if ! bash "$LINT" "${lint_args[@]}"; then
     lint_rc=$?
     # lint_rc=1 means file persisted but lint said red (e.g. redefined

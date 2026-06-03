@@ -27,16 +27,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLIENT="$SCRIPT_DIR/client.py"
 
 port=""
+session_id=""
 timeout="60"
 cell_id=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --port)    port="$2"; shift 2 ;;
-    --timeout) timeout="$2"; shift 2 ;;
-    -h|--help) sed -n '3,25p' "$0" >&2; exit 0 ;;
-    --) shift; break ;;
-    -*) echo "Unknown option: $1" >&2; exit 2 ;;
+    --port)       port="$2"; shift 2 ;;
+    --session-id) session_id="$2"; shift 2 ;;
+    --timeout)    timeout="$2"; shift 2 ;;
+    -h|--help)    sed -n '3,25p' "$0" >&2; exit 0 ;;
+    --)           shift; break ;;
+    -*)           echo "Unknown option: $1" >&2; exit 2 ;;
     *)
       if [[ -z "$cell_id" ]]; then
         cell_id="$1"
@@ -49,13 +51,16 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$cell_id" ]]; then
-  echo "Usage: run-cell.sh [--port N] [--timeout S] CELL_ID" >&2
+  echo "Usage: run-cell.sh [--port N] [--session-id S] [--timeout S] CELL_ID" >&2
   exit 2
 fi
 
 args=("run-cell" "--cell-id" "$cell_id" "--timeout" "$timeout")
 if [[ -n "$port" ]]; then
   args+=("--port" "$port")
+fi
+if [[ -n "$session_id" ]]; then
+  args+=("--session-id" "$session_id")
 fi
 
 exec python3 "$CLIENT" "${args[@]}"
