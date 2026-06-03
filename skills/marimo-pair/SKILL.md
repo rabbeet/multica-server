@@ -221,6 +221,92 @@ extracts the token from the index page automatically; nothing for you to
 configure on a `--no-token` server. For token-auth servers, set
 `MARIMO_TOKEN=...` as usual.
 
+## Helpers — `edit-and-run.sh` and `run-cell.sh`
+
+For the common cell-edit + run round-trip, prefer the bundled helpers
+over hand-rolled `curl POST /api/kernel/run` + manual polling. The
+helpers wrap `client.py` (a small Python facade over the same code_mode
++ execute-code primitives shown above) and compose with
+`lint-and-persist.sh` for the save step.
+
+```bash
+# Edit a cell's code and wait for the reactive run to settle.
+echo 'df = pd.read_parquet("new.parquet")' \
+  | bash scripts/edit-and-run.sh --session-id s_lot5r2 Hbol -
+
+# Re-run an existing cell with its current code (no edit).
+bash scripts/run-cell.sh --session-id s_lot5r2 Hbol
+```
+
+Output is a single JSON line on stdout: `{cell_id, status, errors,
+stdout, took_s, wall_s, timed_out}`. Exit codes: `0` clean, `1` cell
+ran with errors or lint refused it, `2` bad CLI / cell not found, `3`
+transport failure, `124` hard-timeout.
+
+`--timeout N` caps the poll loop (default 60 s). Adaptive backoff is
+built in: 100 → 200 → 500 → 1000 ms. `--no-lint` on `edit-and-run.sh`
+skips the chained `lint-and-persist.sh` flush — useful for probing,
+mandatory before publishing the tailnet URL is **not** to use it.
+
+`--session-id` is required when the marimo server has more than one
+notebook open (the brainstorm host typically has one session per
+`PUL-*.py`). Discover them with `bash scripts/discover-servers.sh` +
+`curl /api/sessions`, or via `python3 scripts/client.py discover`.
+
+`scripts/client.py` is callable directly if you need primitives that
+the shell wrappers don't expose: `discover`, `ping`, `dump-cells`
+(with optional `--with-code`), `edit-and-run`, `run-cell`. Stdlib only.
+
+## Recipes — `# RECIPE:` blocks in notebooks
+
+Past notebooks accumulate hard-won knowledge — which DSN to use for FDS
+unavail queries, which `trips_YYYYMMDD_HHMM` partition shape is current,
+the exact `details->>'op_status'` JSON path for ClickEvt events. Without
+a way to surface this, every new ticket re-discovers it.
+
+Mark such a block with `# RECIPE: <name>` followed by `key: value`
+metadata comments. `scripts/build-index.py` extracts every recipe across
+`/srv/marimo-notebooks/PUL-*.py` and renders them as a `## Recipes`
+section at the bottom of `MARIMO_INDEX.md`, sorted by `verified-at` desc:
+
+```python
+@app.cell(hide_code=True)
+def _fds_unavail():
+    # RECIPE: fds-unavail-by-supplier
+    # verified-at: PUL-268, 2026-06-02
+    # DSN: $FDS_DB_DSN
+    # Tables: trips_YYYYMMDD_HHMM (20-min partitions for the click window)
+    # Summary: cheapest FDS trip per supplier for a click direction + date
+
+    SQL = """
+    SELECT supplier_original, src_metro, dst_metro, depart_date,
+           MAX(found_at) AS fds_found_at
+    FROM trips
+    WHERE found_at >= %(window_start)s AND found_at <= %(click_ts)s
+      AND src_metro = ANY(%(src_codes)s)
+      AND dst_metro = ANY(%(dst_codes)s)
+    GROUP BY 1, 2, 3, 4
+    """
+    ...
+```
+
+Rules the extractor expects:
+
+- The marker line is exactly `# RECIPE: <name>` (whitespace tolerated).
+- Metadata is a contiguous run of `# key: value` comments at the same
+  indent as the marker. A comment that isn't `key: value` ends the
+  metadata block (treated as prose).
+- The code block runs from the first non-blank, non-comment line after
+  metadata, until indent drops below the marker (i.e. the cell function
+  dedents) or the file ends.
+- `verified-at: PUL-N, YYYY-MM-DD` is the sort key. Other keys —
+  `summary`, `dsn`, `tables`, `namespace`, `events`, `json paths` —
+  render with sensible label overrides (DSN, JSON paths, etc.).
+
+Label any recipe with `verified-at` so a future grep can see how stale
+it is. The convention is opt-in: existing notebooks without `# RECIPE:`
+markers contribute nothing to the section.
+
 ## Cell-variable scoping — "one variable, one cell"
 
 marimo's reactive graph keys on top-level variable definitions. Every
