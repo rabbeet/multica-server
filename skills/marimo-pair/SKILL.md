@@ -255,7 +255,82 @@ notebook open (the brainstorm host typically has one session per
 
 `scripts/client.py` is callable directly if you need primitives that
 the shell wrappers don't expose: `discover`, `ping`, `dump-cells`
-(with optional `--with-code`), `edit-and-run`, `run-cell`. Stdlib only.
+(with optional `--with-code`), `edit-and-run`, `run-cell`, `interrupt`.
+Stdlib only.
+
+## Recovering from a wedged kernel — `interrupt.sh` (preferred) vs restart
+
+When a cell is stuck — running an FDS partition scan that won't return,
+spinning on a regex, blocked on a never-arriving HTTP response — there
+are two recovery paths and they have very different costs.
+
+`scripts/interrupt.sh` is the cheap path: it POSTs `/api/kernel/interrupt`,
+which under the hood does `os.kill(kernel_pid, SIGINT)`. The running
+cell raises `KeyboardInterrupt` and **every variable from previously-run
+cells survives** — loaded DataFrames, fitted models, open psycopg
+connections, imported modules. The cells above the stuck one don't have
+to re-run.
+
+```bash
+bash scripts/interrupt.sh --session-id s_lot5r2
+# {"http_status": 200, "response": {"success": true}, "session_id": "s_lot5r2"}
+```
+
+`/api/kernel/restart` is the nuclear path: it kills + respawns the
+kernel process. Every variable, every connection, every loaded module
+disappears. The reactive graph re-runs from scratch on the next trigger,
+which on an FDS-heavy notebook can be a 5-10 minute recovery. Reach for
+restart only when interrupt has been issued twice and the kernel is
+still hung (`client.py dump-cells` keeps timing out), or when the kernel
+process itself died and SIGINT can't reach anything.
+
+Caveat: SIGINT unblocks Python's I/O wait, so a psycopg query running
+inside `with conn:` cancels cleanly and the connection rolls back on
+context exit. If the cell holds a **module-level** psycopg connection
+(no `with` scope), the cancel may leave the connection in
+`InFailedSqlTransaction` state. The recovery is to run `conn.rollback()`
+from a fresh cell — a future Lane B follow-up may add `pg_cancel_backend`
+support to interrupt.sh for this case.
+
+## Prototyping SQL off-notebook — `sql-scratch.sh`
+
+Every iteration of "edit the SQL → re-run the notebook cell → wait for
+the kernel round-trip → see the error" costs 10-30 s. Most of that
+overhead is avoidable for the early "is this query even correct?"
+iterations. `scripts/sql-scratch.sh` opens its own psycopg connection
+(no marimo involvement), runs your SQL inside a default-read-only
+transaction with a 10 s `statement_timeout`, and prints the row count,
+timing, column types, and the head 20 rows as JSON.
+
+```bash
+# Pipe SQL from stdin, default RO + 10 s timeout
+echo "SELECT count(*) FROM issue WHERE status='in_progress'" \
+  | bash scripts/sql-scratch.sh PULSE_PG_DSN
+
+# Read from a file, EXPLAIN ANALYZE the plan
+bash scripts/sql-scratch.sh PULSE_PG_DSN --sql-file query.sql --explain
+
+# Tighter timeout for "this should be fast or it's wrong"
+echo "..." | bash scripts/sql-scratch.sh FDS_DB_DSN --statement-timeout-ms 2000
+
+# Opt out of the read-only guard (you still need a RW DSN)
+echo "INSERT ..." | bash scripts/sql-scratch.sh PULSE_PG_RW_DSN --allow-write
+```
+
+The read-only guard is enforced at the Postgres level (`SET TRANSACTION
+READ ONLY` — Postgres error 25006), so even passing `$FDS_DB_DSN` (which
+is a RW DSN) won't let a mutation through unless you also pass
+`--allow-write`. The script rolls back at the end regardless — nothing
+persists from a scratch session.
+
+Use this before the SQL lands in a marimo cell. Once it returns the
+expected rows under the timeout, paste it into a cell with confidence;
+you've ruled out "the query is wrong" and "the query is slow", so a
+notebook-cell hang afterwards is some other layer's problem.
+
+Exit codes: `0` ok, `1` query failed (syntax, permission, RO violation),
+`2` bad CLI / missing env var / no psycopg installed, `124` statement
+timeout fired.
 
 ## Recipes — `# RECIPE:` blocks in notebooks
 
