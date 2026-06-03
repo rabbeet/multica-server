@@ -291,6 +291,49 @@ def run_cell_kernel(disc: dict[str, Any], cell_id: str, *,
         )
 
 
+def interrupt_kernel(disc: dict[str, Any]) -> dict[str, Any]:
+    """POST /api/kernel/interrupt to send SIGINT to the kernel process.
+
+    Marimo's session.try_interrupt() does os.kill(pid, SIGINT) under the
+    hood — the currently-running cell raises KeyboardInterrupt, in-memory
+    state (variables, imports, open connections) survives. Compare with
+    /api/kernel/restart which kills + respawns the kernel and nukes every
+    variable.
+
+    The endpoint @requires('edit'), which means it needs the
+    Marimo-Server-Token header (already discovered into disc['server_token'])
+    in addition to Marimo-Session-Id.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Marimo-Session-Id": disc["session_id"],
+        "Marimo-Server-Token": disc["server_token"],
+    }
+    if disc.get("auth_token"):
+        headers["Authorization"] = f"Bearer {disc['auth_token']}"
+    req = urllib.request.Request(
+        f"{disc['base']}/api/kernel/interrupt",
+        data=b"{}",
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as r:
+            body = r.read().decode("utf-8", errors="ignore")
+            status = r.status
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"POST /api/kernel/interrupt: {e}") from None
+    try:
+        parsed: Any = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        parsed = {"raw": body[:200]}
+    return {
+        "http_status": status,
+        "response": parsed,
+        "session_id": disc["session_id"],
+    }
+
+
 def poll_cell(disc: dict[str, Any], cell_id: str, *,
               timeout_s: float = 60.0) -> dict[str, Any]:
     """Adaptive-backoff poll until cell hits a terminal status or timeout.
@@ -369,6 +412,15 @@ def _cmd_edit_and_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_interrupt(args: argparse.Namespace) -> int:
+    d = discover(args.port, args.session_id)
+    result = interrupt_kernel(d)
+    print(json.dumps(result))
+    if result.get("http_status") != 200:
+        return 3
+    return 0
+
+
 def _cmd_run_cell(args: argparse.Namespace) -> int:
     d = discover(args.port, args.session_id)
     # Verify cell exists before triggering a run.
@@ -431,6 +483,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--cell-id", required=True)
     s.add_argument("--timeout", type=float, default=60.0)
     s.set_defaults(fn=_cmd_run_cell)
+
+    s = sub.add_parser("interrupt",
+                       help="SIGINT the kernel (preserves in-memory state)")
+    _add_session_args(s)
+    s.set_defaults(fn=_cmd_interrupt)
 
     return p
 

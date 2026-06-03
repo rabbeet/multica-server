@@ -40,9 +40,13 @@ tests=(
   test_client_syntax.sh
   test_edit_and_run_syntax.sh
   test_recipe_extraction.sh
+  test_interrupt_syntax.sh
+  test_sql_scratch_syntax.sh
   test_client_ping.sh
   test_run_cell.sh
   test_edit_and_run.sh
+  test_interrupt.sh
+  test_sql_scratch_ro.sh
 )
 
 passed=0
